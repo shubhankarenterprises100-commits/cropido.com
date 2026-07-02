@@ -22,6 +22,8 @@ from emergentintegrations.payments.stripe.checkout import (
 import razorpay
 import hmac
 import hashlib
+from database import init_engine
+from sync import sync_entity, sync_delete, sync_stats, sync_failures_list, retry_failed
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1754,6 +1756,8 @@ async def startup():
     except Exception as e:
         logger.warning(f"Index creation warning: {e}")
     await seed_data()
+    # Initialize MySQL engine for dual-write sync
+    init_engine()
 
 
 @app.on_event("shutdown")

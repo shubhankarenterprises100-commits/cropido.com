@@ -344,6 +344,21 @@ class AuditLog(Base, TimestampMixin):
     diff_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
+class SyncStatus(Base, TimestampMixin):
+    __tablename__ = "sync_status"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    sync_status: Mapped[str] = mapped_column(String(24), default="pending", nullable=False, index=True)  # pending/success/failed
+    synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("entity_type", "entity_id", name="uq_sync_entity"),
+    )
+
+
 ALL_MODELS: List[type[Base]] = [
     Role, User, Profile, Category, Product, CropListing,
     Equipment, EquipmentRental, Service, Booking,
@@ -351,5 +366,5 @@ ALL_MODELS: List[type[Base]] = [
     CommunityPost, Comment, Like,
     MessageThread, Message, Notification,
     KnowledgeArticle, AiSession, AiMessage,
-    Business, AnalyticsEvent, AuditLog,
+    Business, AnalyticsEvent, AuditLog, SyncStatus,
 ]
