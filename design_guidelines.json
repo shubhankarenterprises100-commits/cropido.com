@@ -1,0 +1,258 @@
+{
+  "brand": {
+    "name": "Cropido",
+    "description": "India's leading digital agriculture ecosystem connecting farmers, buyers, suppliers, service providers, consultants, and agri-businesses.",
+    "archetype": "Organic & Earthy",
+    "vibe": "Trustworthy, earthy, abundant, professional, accessible, investor-ready"
+  },
+  "theme": {
+    "mode": "Light mode primary, Dark mode enabled",
+    "colors": {
+      "primary": {
+        "DEFAULT": "#2E7D32",
+        "50": "#E8F5E9",
+        "100": "#C8E6C9",
+        "200": "#A5D6A7",
+        "300": "#81C784",
+        "400": "#66BB6A",
+        "500": "#4CAF50",
+        "600": "#43A047",
+        "700": "#388E3C",
+        "800": "#2E7D32",
+        "900": "#1B5E20",
+        "foreground": "#FFFFFF"
+      },
+      "secondary": {
+        "DEFAULT": "#FF9800",
+        "50": "#FFF3E0",
+        "100": "#FFE0B2",
+        "200": "#FFCC80",
+        "300": "#FFB74D",
+        "400": "#FFA726",
+        "500": "#FF9800",
+        "600": "#FB8C00",
+        "700": "#F57C00",
+        "800": "#EF6C00",
+        "900": "#E65100",
+        "foreground": "#FFFFFF"
+      },
+      "background": {
+        "light": "#FFFFFF",
+        "light_subtle": "#F9FAFB",
+        "dark": "#121212",
+        "dark_subtle": "#1E1E1E"
+      },
+      "surface": {
+        "light": "#FFFFFF",
+        "light_hover": "#F3F4F6",
+        "dark": "#1E1E1E",
+        "dark_hover": "#2D2D2D"
+      },
+      "text": {
+        "light_primary": "#111827",
+        "light_secondary": "#4B5563",
+        "light_tertiary": "#9CA3AF",
+        "dark_primary": "#F9FAFB",
+        "dark_secondary": "#9CA3AF",
+        "dark_tertiary": "#6B7280"
+      },
+      "border": {
+        "light": "#E5E7EB",
+        "dark": "#374151"
+      },
+      "status": {
+        "success": "#10B981",
+        "warning": "#F59E0B",
+        "error": "#EF4444",
+        "info": "#3B82F6"
+      }
+    }
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Outfit, sans-serif",
+      "body": "Plus Jakarta Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "rules": {
+      "headings": "Never use Inter or default generic fonts for headings. Use Outfit for a modern, approachable tech feel. Employ tight letter spacing (tracking-tight) for H1 and H2.",
+      "body": "Use Plus Jakarta Sans for extreme legibility in complex dashboards and marketplace listings. Multilingual text (Hindi, Bengali) should fallback to system-native high-quality sans-serifs (e.g., Noto Sans).",
+      "hierarchy": {
+        "h1": "text-4xl sm:text-5xl font-bold tracking-tight",
+        "h2": "text-2xl sm:text-3xl font-semibold tracking-tight",
+        "h3": "text-xl sm:text-2xl font-semibold",
+        "h4": "text-lg sm:text-xl font-medium",
+        "body": "text-base leading-relaxed",
+        "small": "text-sm text-light_secondary dark:text-dark_secondary",
+        "overline": "text-xs uppercase tracking-widest font-semibold"
+      }
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous Spacing. A premium app avoids clutter. Provide ample breathing room inside cards and around layout boundaries.",
+    "container": "w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+    "mobile_safe_area": "Ensure pb-24 on main screens to account for the bottom tab navigation.",
+    "border_radius": {
+      "card": "rounded-2xl",
+      "button": "rounded-full",
+      "input": "rounded-xl",
+      "badge": "rounded-full",
+      "image": "rounded-xl"
+    },
+    "shadows": {
+      "light_card": "shadow-sm hover:shadow-md transition-shadow duration-200",
+      "dark_card": "shadow-none border border-dark border-opacity-50",
+      "floating_action": "shadow-lg shadow-primary/20"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary-600 text-white hover:bg-primary-700 rounded-full py-3 px-6 font-semibold transition-colors data-testid='button-primary'",
+      "secondary": "bg-secondary-500 text-white hover:bg-secondary-600 rounded-full py-3 px-6 font-semibold transition-colors data-testid='button-secondary'",
+      "outline": "border-2 border-primary-600 text-primary-600 hover:bg-primary-50 rounded-full py-3 px-6 font-semibold transition-colors data-testid='button-outline'",
+      "ghost": "text-light_secondary hover:bg-light_hover dark:text-dark_secondary dark:hover:bg-dark_hover rounded-full py-3 px-6 font-medium transition-colors data-testid='button-ghost'"
+    },
+    "cards": {
+      "surface": "bg-surface-light dark:bg-surface-dark rounded-2xl border border-border-light dark:border-border-dark overflow-hidden",
+      "interactive": "hover:-translate-y-1 transition-transform duration-200 cursor-pointer"
+    },
+    "bottom_tabs": {
+      "style": "Glassmorphism: backdrop-blur-xl bg-white/80 dark:bg-black/80 border-t border-border-light dark:border-border-dark absolute bottom-0 w-full z-50 h-16 flex justify-around items-center",
+      "active_state": "text-primary-600 dark:text-primary-400 font-medium",
+      "inactive_state": "text-light_tertiary dark:text-dark_tertiary"
+    },
+    "inputs": {
+      "text": "w-full bg-light_subtle dark:bg-dark_subtle border border-border-light dark:border-border-dark rounded-xl px-4 py-3 focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all",
+      "search": "relative rounded-full bg-light_subtle dark:bg-dark_subtle px-4 py-2 flex items-center gap-2"
+    },
+    "badges": {
+      "verified": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-xs font-bold px-2 py-1 rounded-full",
+      "organic": "bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400 text-xs font-bold px-2 py-1 rounded-full",
+      "trending": "bg-secondary-100 text-secondary-700 dark:bg-secondary-900/30 dark:text-secondary-400 text-xs font-bold px-2 py-1 rounded-full"
+    }
+  },
+  "screens": {
+    "splash_onboarding": {
+      "layout": "Full-screen imagery with a soft gradient overlay (bg-gradient-to-t from-black/80 via-black/40 to-transparent) at the bottom. Bold white typography for H1. Smooth swipe transitions.",
+      "features": ["Language selection modal (EN, HI, BN)", "Value proposition slides", "Get Started & Login CTAs"]
+    },
+    "authentication": {
+      "layout": "Clean, minimal white/dark card centered on screen with a subtle earthy background pattern. Large, rounded inputs. Social login buttons with original brand colors.",
+      "features": ["OTP Verification with visual focus on individual digits", "Forgot password flow"]
+    },
+    "home_dashboard": {
+      "layout": "Top section: Personalized greeting, location, and weather widget (Glassmorphic card). Middle: 'Bento Grid' style quick actions (Buy, Sell, Rent, Ask AI). Bottom: Horizontal scrolling lists for 'Trending', 'Crop Recommendations'.",
+      "features": ["Floating Action Button for 'Quick Sell' or 'Ask AI'"]
+    },
+    "marketplace": {
+      "layout": "Category pills at top (horizontal scroll). Two-column masonry or grid for product cards. Product cards feature large images, price in secondary color, and a quick 'Add to Cart' icon button.",
+      "features": ["Filter/Sort bottom sheet modal", "Wishlist toggle on images"]
+    },
+    "crop_trading": {
+      "layout": "List view of active trade requests. Emphasize price, quantity, and location distance. 'List Produce' is a distinct primary action.",
+      "features": ["Negotiation chat interface preview", "Location map snippet"]
+    },
+    "equipment_rental": {
+      "layout": "Large hero imagery for top equipment. Details page includes an availability calendar (Shadcn customized) and sticky bottom bar with daily pricing and 'Book Now'.",
+      "features": ["Equipment condition ratings", "Provider distance"]
+    },
+    "agri_services": {
+      "layout": "Directory style list with service provider avatars, ratings, and 'Verified' badges. Service detail page features a booking scheduling component.",
+      "features": ["Service categories: Soil Testing, Consultancy, Insurance"]
+    },
+    "community_feed": {
+      "layout": "Classic social feed: Cards with user avatar, timestamp, multimedia content, and action bar (Like, Comment, Share). Tabs at top for 'Feed / Experts / Trending'.",
+      "features": ["Expert Q&A highlighted posts"]
+    },
+    "knowledge_center": {
+      "layout": "Magazine editorial layout. Featured article spanning full width. Secondary articles in a 2-column grid. Video tutorials in a horizontal scrolling carousel with play button overlays.",
+      "features": ["Govt schemes categorization"]
+    },
+    "ai_farming_assistant": {
+      "layout": "Chat interface. Assistant messages in subtle primary-50, user messages in white/dark_subtle. Bottom input bar features text, voice mic, and camera upload icons.",
+      "features": ["Image disease detection results rendered as stylized summary cards within the chat"]
+    },
+    "business_directory": {
+      "layout": "List view with robust filtering (Type, Rating, Distance). Contact actions (Call, Message) immediately accessible on the list items.",
+      "features": ["Saved contacts tab"]
+    },
+    "messaging": {
+      "layout": "Standard chat list. Inside chat: distinct message bubbles, voice note UI (waveform), and media support.",
+      "features": ["Status indicators (Online, Read)"]
+    },
+    "user_profile": {
+      "layout": "Header with cover image (farm photo) and circular avatar overlapping. Verification badge prominent. Stats row (Crops grown, Area). List items for settings.",
+      "features": ["Language toggle", "Privacy settings"]
+    },
+    "subscription_plans": {
+      "layout": "Pricing cards with 'Pro Farmer' highlighted (slightly larger, primary border, 'Most Popular' badge). Features list with checkmarks. 'Enterprise' as a contact sales option.",
+      "features": ["Stripe checkout integration indicator"]
+    }
+  },
+  "media": {
+    "instructions": "Use these high-quality, curated images for hero banners, category tiles, product cards, community avatars, and knowledge thumbnails. DO NOT use generic placeholders.",
+    "images": {
+      "hero_onboarding": [
+        {
+          "url": "https://images.pexels.com/photos/15469881/pexels-photo-15469881.jpeg",
+          "description": "A South Asian farmer tilling soil in a rural field during a vibrant sunset",
+          "placement": "Onboarding Screen 1 / Welcome"
+        },
+        {
+          "url": "https://images.pexels.com/photos/15523676/pexels-photo-15523676.jpeg",
+          "description": "A farmer walks across a field during a vibrant sunset",
+          "placement": "Onboarding Screen 2 / Vision"
+        }
+      ],
+      "equipment_rental": [
+        {
+          "url": "https://images.pexels.com/photos/7457180/pexels-photo-7457180.jpeg",
+          "description": "A blue tractor parked in an agricultural field during daytime",
+          "placement": "Equipment Rental Hero / Category Tile"
+        },
+        {
+          "url": "https://images.pexels.com/photos/29465456/pexels-photo-29465456.jpeg",
+          "description": "A vibrant green tractor on a farm under clear blue skies",
+          "placement": "Tractor Listing"
+        }
+      ],
+      "marketplace_crops": [
+        {
+          "url": "https://images.unsplash.com/photo-1560493676-04071c5f467b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwyfHxhZ3JpY3VsdHVyZSUyMHNlZWRzJTIwb3JnYW5pY3xlbnwwfHx8fDE3ODI2MzgxNDZ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Rows of green crops in field at sunset",
+          "placement": "Organic Farming Category / Knowledge Base Cover"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1625246333195-78d9c38ad449?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwxfHxhZ3JpY3VsdHVyZSUyMHNlZWRzJTIwb3JnYW5pY3xlbnwwfHx8fDE3ODI2MzgxNDZ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Green plant on brown soil (seedling)",
+          "placement": "Seeds Category"
+        }
+      ],
+      "village_market": [
+        {
+          "url": "https://images.pexels.com/photos/17286188/pexels-photo-17286188.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+          "description": "Elderly Indian woman selling vegetables and pineapples in a vibrant market setting",
+          "placement": "Trading / Local Buyers Directory Hero"
+        },
+        {
+          "url": "https://images.pexels.com/photos/6472502/pexels-photo-6472502.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+          "description": "A woman selling fresh vegetables as a street vendor in India",
+          "placement": "Community Feed / Success Stories"
+        }
+      ]
+    }
+  },
+  "testing": {
+    "requirements": "CRITICAL: All interactive elements (buttons, links, form inputs, menus, toggles, tabs) and key informational elements MUST include a `data-testid` attribute to facilitate robust automated testing.",
+    "convention": "Use kebab-case, role-based naming (e.g., `data-testid='login-submit-button'`, `data-testid='marketplace-category-seeds'`, `data-testid='bottom-tab-home'`)."
+  },
+  "motion": {
+    "philosophy": "Smooth, purposeful animations that feel native to a premium mobile app.",
+    "transitions": {
+      "page": "Slide-in from right on push, slide-out to right on pop.",
+      "modal": "Slide-up from bottom with background overlay fade-in.",
+      "button": "Scale down to 0.95 on press (React Native / Framer Motion equivalent tap animation).",
+      "skeleton": "Shimmer effect for loading states (Marketplace, Feed, Directories)."
+    }
+  }
+}
