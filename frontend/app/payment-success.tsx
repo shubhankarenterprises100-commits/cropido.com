@@ -8,42 +8,46 @@ import { api } from '@/src/api/client';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { Colors, Radius } from '@/src/theme';
 
-const MAX_TRIES = 8;
-const INTERVAL_MS = 2000;
+const MAX_TRIES = 10;
+const INTERVAL_MS = 1500;
 
 export default function PaymentSuccess() {
   const router = useRouter();
-  const { session_id } = useLocalSearchParams<{ session_id?: string }>();
+  const params = useLocalSearchParams<{ session_token?: string; session_id?: string; status?: string }>();
   const { refresh } = useAuth();
-  const [status, setStatus] = useState<'polling' | 'paid' | 'pending' | 'failed'>('polling');
+  const [status, setStatus] = useState<'polling' | 'paid' | 'pending' | 'failed' | 'cancelled'>('polling');
   const [details, setDetails] = useState<any>(null);
   const tries = useRef(0);
 
+  const token = params.session_token;
+  const initialStatus = params.status;
+
   useEffect(() => {
-    if (!session_id) { setStatus('failed'); return; }
+    if (initialStatus === 'cancelled') { setStatus('cancelled'); return; }
+    if (!token && !params.session_id) { setStatus('failed'); return; }
     let cancelled = false;
 
     const poll = async () => {
       try {
-        const r = await api.paymentStatus(session_id);
-        if (cancelled) return;
-        setDetails(r.transaction);
-        if (r.payment_status === 'paid') {
-          setStatus('paid');
-          refresh();
-          return;
-        }
-        if (r.payment_status === 'failed' || r.payment_status === 'expired') {
-          setStatus('failed');
-          return;
+        // Razorpay flow
+        if (token) {
+          const r = await api.rzpStatus(token);
+          if (cancelled) return;
+          setDetails(r.transaction);
+          if (r.payment_status === 'paid') { setStatus('paid'); refresh(); return; }
+          if (r.payment_status === 'failed_signature' || r.payment_status === 'failed') { setStatus('failed'); return; }
+        } else if (params.session_id) {
+          // Stripe fallback (legacy)
+          const r = await api.paymentStatus(String(params.session_id));
+          if (cancelled) return;
+          setDetails(r.transaction);
+          if (r.payment_status === 'paid') { setStatus('paid'); refresh(); return; }
+          if (r.payment_status === 'failed' || r.payment_status === 'expired') { setStatus('failed'); return; }
         }
         tries.current += 1;
-        if (tries.current >= MAX_TRIES) {
-          setStatus('pending');
-          return;
-        }
+        if (tries.current >= MAX_TRIES) { setStatus('pending'); return; }
         setTimeout(poll, INTERVAL_MS);
-      } catch (e) {
+      } catch {
         tries.current += 1;
         if (tries.current >= MAX_TRIES) { setStatus('failed'); return; }
         setTimeout(poll, INTERVAL_MS);
@@ -51,7 +55,9 @@ export default function PaymentSuccess() {
     };
     poll();
     return () => { cancelled = true; };
-  }, [session_id, refresh]);
+  }, [token, params.session_id, initialStatus, refresh]);
+
+  const planLabel = details?.plan_id?.replace('_', ' ').toUpperCase();
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -70,14 +76,29 @@ export default function PaymentSuccess() {
             </LinearGradient>
             <Text style={styles.title}>Payment Successful! 🎉</Text>
             <Text style={styles.sub}>
-              You&apos;re now on the <Text style={{ fontWeight: '700', color: Colors.primary }}>{details?.plan_id?.replace('_', ' ').toUpperCase()}</Text> plan.
+              {details?.kind === 'subscription' ? (
+                <>You&apos;re now on the <Text style={{ fontWeight: '700', color: Colors.primary }}>{planLabel}</Text> plan.</>
+              ) : (
+                <>Your order payment is confirmed.</>
+              )}
             </Text>
             <View style={styles.receipt}>
-              <View style={styles.rRow}><Text style={styles.rLabel}>Amount</Text><Text style={styles.rValue}>₹{details?.amount}</Text></View>
-              <View style={styles.rRow}><Text style={styles.rLabel}>Session</Text><Text style={styles.rValue}>{String(session_id).slice(-10)}</Text></View>
+              <View style={styles.rRow}><Text style={styles.rLabel}>Amount</Text><Text style={styles.rValue}>₹{details?.amount_inr ?? details?.amount}</Text></View>
+              <View style={styles.rRow}><Text style={styles.rLabel}>Method</Text><Text style={styles.rValue}>{details?.razorpay_payment_id ? 'Razorpay UPI/Card' : 'Stripe'}</Text></View>
+              <View style={styles.rRow}><Text style={styles.rLabel}>Reference</Text><Text style={styles.rValue}>{(details?.razorpay_payment_id || details?.session_id || '').slice(-10)}</Text></View>
             </View>
             <TouchableOpacity style={styles.primaryBtn} onPress={() => router.replace('/(tabs)/home')} testID="payment-success-home">
               <Text style={styles.primaryText}>Back to Home</Text>
+            </TouchableOpacity>
+          </>
+        )}
+        {status === 'cancelled' && (
+          <>
+            <Ionicons name="close-circle" size={72} color={Colors.warning} />
+            <Text style={styles.title}>Payment cancelled</Text>
+            <Text style={styles.sub}>You cancelled the payment. No amount was charged.</Text>
+            <TouchableOpacity style={styles.primaryBtn} onPress={() => router.replace('/subscription')}>
+              <Text style={styles.primaryText}>Try Again</Text>
             </TouchableOpacity>
           </>
         )}

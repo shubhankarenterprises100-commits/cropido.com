@@ -6,6 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import uuid
+import json
 import jwt
 import bcrypt
 import httpx
@@ -18,6 +19,9 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 from emergentintegrations.payments.stripe.checkout import (
     StripeCheckout, CheckoutSessionRequest,
 )
+import razorpay
+import hmac
+import hashlib
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -31,6 +35,9 @@ JWT_ALGO = 'HS256'
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', '')
 APP_BASE_URL = os.environ.get('APP_BASE_URL', 'http://localhost:8001')
+RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', '')
+RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', '')
+razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)) if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET else None
 
 app = FastAPI(title="Cropido API")
 api = APIRouter(prefix="/api")
@@ -984,6 +991,330 @@ async def stripe_webhook(request: Request):
                         })
     except Exception as e:
         logger.warning(f"Webhook processing error: {e}")
+    return {"ok": True}
+
+
+# ---------- RAZORPAY (India: UPI, cards, netbanking, wallets) ----------
+class RzpOrderIn(BaseModel):
+    plan_id: Optional[str] = None
+    order_id: Optional[str] = None  # marketplace order (kind='order')
+    amount: Optional[float] = None  # only used for order kind
+    kind: str = "subscription"  # subscription | order
+    return_url: Optional[str] = None  # where checkout page redirects after payment
+
+
+class RzpVerifyIn(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+def _verify_rzp_signature(order_id: str, payment_id: str, signature: str) -> bool:
+    body = f"{order_id}|{payment_id}".encode()
+    expected = hmac.new(RAZORPAY_KEY_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+@api.post("/razorpay/create-order")
+async def rzp_create_order(body: RzpOrderIn, user=Depends(get_current_user)):
+    if not razorpay_client:
+        raise HTTPException(503, "Razorpay not configured")
+
+    # Determine amount server-side (never trust client)
+    if body.kind == "subscription":
+        plan = next((p for p in PLANS if p["plan_id"] == body.plan_id), None)
+        if not plan or plan["price"] == 0:
+            raise HTTPException(400, "Invalid or free plan")
+        amount_inr = float(plan["price"])
+        meta_extra = {"plan_id": plan["plan_id"]}
+    elif body.kind == "order":
+        if not body.order_id:
+            raise HTTPException(400, "order_id required")
+        order_doc = await db.orders.find_one({"order_id": body.order_id, "user_id": user["user_id"]}, {"_id": 0})
+        if not order_doc:
+            raise HTTPException(404, "Order not found")
+        amount_inr = float(order_doc.get("total") or 0)
+        if amount_inr <= 0:
+            raise HTTPException(400, "Invalid order amount")
+        meta_extra = {"order_id": body.order_id}
+    else:
+        raise HTTPException(400, "Invalid kind")
+
+    amount_paise = int(round(amount_inr * 100))
+    receipt = f"rcpt_{uuid.uuid4().hex[:12]}"
+    rzp_order = razorpay_client.order.create({
+        "amount": amount_paise,
+        "currency": "INR",
+        "receipt": receipt,
+        "payment_capture": 1,
+        "notes": {"user_id": user["user_id"], "kind": body.kind, **{k: str(v) for k, v in meta_extra.items()}},
+    })
+    session_token = uuid.uuid4().hex
+    await db.rzp_transactions.insert_one({
+        "session_token": session_token,
+        "razorpay_order_id": rzp_order["id"],
+        "receipt": receipt,
+        "user_id": user["user_id"],
+        "kind": body.kind,
+        **meta_extra,
+        "amount_inr": amount_inr,
+        "amount_paise": amount_paise,
+        "currency": "INR",
+        "payment_status": "created",
+        "created_at": now_utc().isoformat(),
+    })
+    return {
+        "session_token": session_token,
+        "razorpay_order_id": rzp_order["id"],
+        "key_id": RAZORPAY_KEY_ID,
+        "amount": amount_paise,
+        "currency": "INR",
+        "receipt": receipt,
+        "checkout_url": f"{APP_BASE_URL}/api/razorpay/checkout/{session_token}",
+        "amount_inr": amount_inr,
+    }
+
+
+@api.post("/razorpay/verify")
+async def rzp_verify(body: RzpVerifyIn, user=Depends(get_current_user)):
+    tx = await db.rzp_transactions.find_one({"razorpay_order_id": body.razorpay_order_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Transaction not found")
+    ok = _verify_rzp_signature(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature)
+    if not ok:
+        await db.rzp_transactions.update_one(
+            {"razorpay_order_id": body.razorpay_order_id},
+            {"$set": {"payment_status": "failed_signature", "updated_at": now_utc().isoformat()}},
+        )
+        raise HTTPException(400, "Invalid signature")
+    updates = {
+        "payment_status": "paid",
+        "razorpay_payment_id": body.razorpay_payment_id,
+        "updated_at": now_utc().isoformat(),
+    }
+    await db.rzp_transactions.update_one({"razorpay_order_id": body.razorpay_order_id}, {"$set": updates})
+    # Upgrade user if subscription
+    if tx["kind"] == "subscription" and tx.get("plan_id"):
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"subscription": tx["plan_id"], "subscribed_at": now_utc().isoformat()}},
+        )
+        already = await db.payments.find_one({"razorpay_payment_id": body.razorpay_payment_id})
+        if not already:
+            await db.payments.insert_one({
+                "payment_id": f"pay_{uuid.uuid4().hex[:10]}",
+                "razorpay_payment_id": body.razorpay_payment_id,
+                "razorpay_order_id": body.razorpay_order_id,
+                "user_id": user["user_id"],
+                "plan_id": tx["plan_id"],
+                "amount": tx["amount_inr"],
+                "gateway": "razorpay",
+                "status": "paid",
+                "created_at": now_utc().isoformat(),
+            })
+    elif tx["kind"] == "order" and tx.get("order_id"):
+        await db.orders.update_one(
+            {"order_id": tx["order_id"]},
+            {"$set": {"payment_status": "paid", "payment_method": "razorpay",
+                      "razorpay_payment_id": body.razorpay_payment_id}},
+        )
+    return {"ok": True, "kind": tx["kind"], "amount_inr": tx["amount_inr"]}
+
+
+@api.get("/razorpay/status/{session_token}")
+async def rzp_status(session_token: str, user=Depends(get_current_user)):
+    tx = await db.rzp_transactions.find_one(
+        {"session_token": session_token, "user_id": user["user_id"]},
+        {"_id": 0},
+    )
+    if not tx:
+        raise HTTPException(404, "Not found")
+    return {"payment_status": tx["payment_status"], "transaction": tx}
+
+
+@app.get("/api/razorpay/checkout/{session_token}")
+async def rzp_checkout_page(session_token: str):
+    """Serve hosted Razorpay Checkout HTML page (opened via WebBrowser on mobile,
+    window.location on web). Auto-opens Razorpay modal, verifies signature server-side,
+    then redirects back to the app with success/failure."""
+    from fastapi.responses import HTMLResponse
+    tx = await db.rzp_transactions.find_one({"session_token": session_token}, {"_id": 0})
+    if not tx:
+        return HTMLResponse("<h3>Invalid or expired checkout link</h3>", status_code=404)
+
+    user_doc = await db.users.find_one({"user_id": tx["user_id"]}, {"_id": 0, "password_hash": 0})
+    prefill_name = (user_doc or {}).get("name", "Cropido User")
+    prefill_email = (user_doc or {}).get("email", "")
+    prefill_contact = (user_doc or {}).get("phone", "") or ""
+    display_amount = f"{tx['amount_inr']:.2f}"
+    display_title = "Cropido Subscription" if tx["kind"] == "subscription" else "Cropido Order"
+    display_desc = tx.get("plan_id") or tx.get("order_id") or "Cropido Payment"
+    return_url_success = f"{APP_BASE_URL}/payment-success?session_token={session_token}&status=paid"
+    return_url_cancel = f"{APP_BASE_URL}/payment-success?session_token={session_token}&status=cancelled"
+
+    html = f"""<!doctype html>
+<html><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Cropido · Secure Payment</title>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<style>
+  body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+         background:linear-gradient(135deg,#2E7D32 0%,#1B5E20 100%); color:#fff;
+         min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }}
+  .card {{ background:#fff; color:#111827; padding:32px 24px; border-radius:24px; max-width:400px;
+          width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.3); text-align:center; }}
+  h1 {{ margin:0; font-size:22px; letter-spacing:-0.4px; }}
+  h2 {{ margin:4px 0 20px; font-size:14px; color:#4B5563; font-weight:500; }}
+  .amount {{ font-size:44px; font-weight:800; color:#2E7D32; letter-spacing:-1px; }}
+  .desc {{ color:#6B7280; font-size:13px; margin:4px 0 24px; }}
+  .logo {{ width:56px; height:56px; border-radius:28px; background:#2E7D32; display:inline-flex;
+          align-items:center; justify-content:center; margin-bottom:12px; }}
+  .logo svg {{ width:28px; height:28px; }}
+  .btn {{ background:#2E7D32; color:#fff; border:none; padding:14px 32px; border-radius:999px;
+         font-size:15px; font-weight:700; cursor:pointer; margin-top:10px; width:100%; }}
+  .btn:disabled {{ opacity:.6 }}
+  .methods {{ display:flex; gap:8px; justify-content:center; margin:16px 0; }}
+  .method {{ background:#F3F4F6; padding:6px 12px; border-radius:8px; font-size:11px; color:#4B5563; font-weight:600; }}
+  .status {{ margin-top:16px; font-size:13px; color:#6B7280; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="#fff"><path d="M17 8C8 10 5.9 16.17 3.82 21.34l1.89.66.95-2.3c.48.17.98.3 1.34.3C19 20 22 3 22 3c-1 2-8 2.25-13 3.25S2 11.5 2 13.5s1.75 3.75 1.75 3.75C7 8 17 8 17 8z"/></svg>
+  </div>
+  <h1>{display_title}</h1>
+  <h2>{display_desc}</h2>
+  <div class="amount">₹{display_amount}</div>
+  <div class="desc">Secure payment powered by Razorpay</div>
+  <div class="methods">
+    <div class="method">UPI</div><div class="method">Cards</div>
+    <div class="method">Netbanking</div><div class="method">Wallets</div>
+  </div>
+  <button class="btn" id="payBtn" onclick="pay()">Pay ₹{display_amount}</button>
+  <div class="status" id="status">Ready. Test UPI: <b>success@razorpay</b> · Test card: <b>4111 1111 1111 1111</b></div>
+</div>
+<script>
+const ORDER_ID = "{tx['razorpay_order_id']}";
+const KEY_ID = "{RAZORPAY_KEY_ID}";
+const AMOUNT = {tx['amount_paise']};
+const SESSION_TOKEN = "{session_token}";
+const RETURN_SUCCESS = "{return_url_success}";
+const RETURN_CANCEL = "{return_url_cancel}";
+const BACKEND = "{APP_BASE_URL}/api";
+
+async function pay() {{
+  document.getElementById('payBtn').disabled = true;
+  document.getElementById('status').textContent = 'Opening secure checkout...';
+  const options = {{
+    key: KEY_ID,
+    amount: AMOUNT,
+    currency: 'INR',
+    order_id: ORDER_ID,
+    name: 'Cropido',
+    description: '{display_desc}',
+    theme: {{ color: '#2E7D32' }},
+    prefill: {{
+      name: {json.dumps(prefill_name)},
+      email: {json.dumps(prefill_email)},
+      contact: {json.dumps(prefill_contact)}
+    }},
+    modal: {{
+      ondismiss: function() {{
+        document.getElementById('status').textContent = 'Payment cancelled.';
+        document.getElementById('payBtn').disabled = false;
+        setTimeout(function() {{ window.location.href = RETURN_CANCEL; }}, 800);
+      }}
+    }},
+    handler: async function(response) {{
+      document.getElementById('status').textContent = 'Verifying payment...';
+      try {{
+        const r = await fetch(BACKEND + '/razorpay/verify-public', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{
+            session_token: SESSION_TOKEN,
+            razorpay_order_id: response.razorpay_order_id,
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_signature: response.razorpay_signature,
+          }})
+        }});
+        const j = await r.json();
+        if (r.ok && j.ok) {{
+          document.getElementById('status').textContent = 'Payment successful! Redirecting...';
+          setTimeout(function() {{ window.location.href = RETURN_SUCCESS; }}, 600);
+        }} else {{
+          document.getElementById('status').textContent = 'Verification failed: ' + (j.detail || 'Unknown');
+          document.getElementById('payBtn').disabled = false;
+        }}
+      }} catch (e) {{
+        document.getElementById('status').textContent = 'Verify error: ' + e.message;
+        document.getElementById('payBtn').disabled = false;
+      }}
+    }}
+  }};
+  const rz = new Razorpay(options);
+  rz.on('payment.failed', function(resp) {{
+    document.getElementById('status').textContent = 'Payment failed: ' + (resp.error.description || '');
+    document.getElementById('payBtn').disabled = false;
+  }});
+  rz.open();
+}}
+// Auto-open on page load
+setTimeout(pay, 600);
+</script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
+
+# Public verify endpoint (called from hosted checkout page — uses session_token, not JWT)
+class RzpPublicVerifyIn(BaseModel):
+    session_token: str
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@api.post("/razorpay/verify-public")
+async def rzp_verify_public(body: RzpPublicVerifyIn):
+    tx = await db.rzp_transactions.find_one({"session_token": body.session_token}, {"_id": 0})
+    if not tx or tx.get("razorpay_order_id") != body.razorpay_order_id:
+        raise HTTPException(404, "Transaction not found")
+    ok = _verify_rzp_signature(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature)
+    if not ok:
+        await db.rzp_transactions.update_one(
+            {"session_token": body.session_token},
+            {"$set": {"payment_status": "failed_signature", "updated_at": now_utc().isoformat()}},
+        )
+        raise HTTPException(400, "Invalid signature")
+    await db.rzp_transactions.update_one(
+        {"session_token": body.session_token},
+        {"$set": {"payment_status": "paid", "razorpay_payment_id": body.razorpay_payment_id,
+                  "updated_at": now_utc().isoformat()}},
+    )
+    if tx["kind"] == "subscription" and tx.get("plan_id"):
+        await db.users.update_one(
+            {"user_id": tx["user_id"]},
+            {"$set": {"subscription": tx["plan_id"], "subscribed_at": now_utc().isoformat()}},
+        )
+        already = await db.payments.find_one({"razorpay_payment_id": body.razorpay_payment_id})
+        if not already:
+            await db.payments.insert_one({
+                "payment_id": f"pay_{uuid.uuid4().hex[:10]}",
+                "razorpay_payment_id": body.razorpay_payment_id,
+                "razorpay_order_id": body.razorpay_order_id,
+                "user_id": tx["user_id"], "plan_id": tx["plan_id"],
+                "amount": tx["amount_inr"], "gateway": "razorpay",
+                "status": "paid", "created_at": now_utc().isoformat(),
+            })
+    elif tx["kind"] == "order" and tx.get("order_id"):
+        await db.orders.update_one(
+            {"order_id": tx["order_id"]},
+            {"$set": {"payment_status": "paid", "payment_method": "razorpay",
+                      "razorpay_payment_id": body.razorpay_payment_id}},
+        )
     return {"ok": True}
 
 

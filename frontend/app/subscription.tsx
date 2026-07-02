@@ -36,22 +36,23 @@ export default function Subscription() {
     setSubscribing(planId);
     try {
       if (price === 0) {
-        // Downgrade to free — call mock endpoint
         await api.subscribe(planId);
         await refresh();
         setCurrent(planId);
       } else {
+        // Razorpay UPI checkout
+        const r = await api.rzpCreateOrder({ kind: 'subscription', plan_id: planId });
+        const url = r.checkout_url;
         const origin = getOriginUrl();
-        const r = await api.checkoutSubscription(planId, origin);
-        const url = r.url;
         if (Platform.OS === 'web') {
           if (typeof window !== 'undefined') window.location.href = url;
         } else {
           const result = await WebBrowser.openAuthSessionAsync(url, `${origin}/payment-success`);
           if (result.type === 'success' && result.url) {
             const params = new URLSearchParams(result.url.split('?')[1] || '');
-            const sid = params.get('session_id');
-            if (sid) router.push({ pathname: '/payment-success', params: { session_id: sid } });
+            const tok = params.get('session_token');
+            const status = params.get('status');
+            if (tok) router.push({ pathname: '/payment-success', params: { session_token: tok, status: status || 'pending' } });
           }
         }
       }
@@ -74,7 +75,7 @@ export default function Subscription() {
           <View style={styles.heroCard}>
             <Ionicons name="rocket" size={30} color={Colors.secondary} />
             <Text style={styles.heroTitle}>Grow your farming business</Text>
-            <Text style={styles.heroSub}>Real Stripe test-mode checkout. Use card 4242 4242 4242 4242.</Text>
+            <Text style={styles.heroSub}>UPI · Cards · Netbanking · Wallets · Powered by Razorpay (Test mode)</Text>
           </View>
           {error ? <Text style={styles.error}>{error}</Text> : null}
           {plans.map((p) => {
@@ -114,7 +115,7 @@ export default function Subscription() {
                   >
                     {subscribing === p.plan_id ? <ActivityIndicator color="#fff" /> : (
                       <>
-                        <Text style={styles.selectText}>{p.price === 0 ? p.cta : `${p.cta} · Pay with Stripe`}</Text>
+                        <Text style={styles.selectText}>{p.price === 0 ? p.cta : `${p.cta} · Pay via UPI`}</Text>
                       </>
                     )}
                   </TouchableOpacity>

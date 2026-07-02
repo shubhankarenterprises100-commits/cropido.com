@@ -1,0 +1,37 @@
+{
+  "summary": "Backend-only regression + Razorpay India integration verification. 47/47 pytest cases PASSED (100%) against the public preview URL (https://agri-marketplace-144.preview.emergentagent.com/api). Verified all 12 requested Razorpay behaviours: (1) POST /api/razorpay/create-order with {kind:'subscription', plan_id:'pro_farmer'} returns session_token, razorpay_order_id starting with 'order_', key_id='rzp_test_T8dp0FhJUKqtqK', amount=29900 paise, currency='INR', checkout_url; DB rzp_transactions row has payment_status='created' (verified via /status). (2) plan_id='free' → 400; unknown plan → 400. (3) kind='order' with nonexistent order_id → 404; kind='order' with real user-owned order returns proper amount in paise (₹300 → 30000). (4) No auth → 401/403. (5) GET /api/razorpay/status/{token} returns payment_status + transaction; unknown token → 404; wrong user → 404. (6) GET /api/razorpay/checkout/{token} PUBLIC returns HTML (Content-Type text/html) containing checkout.razorpay.com script, key_id and razorpay_order_id; unknown token → 404. (7) POST /api/razorpay/verify with valid HMAC (computed with test secret M2H4LNpoaWu1usEuxPPvPkQ7) sets payment_status='paid', upgrades user subscription to 'pro_farmer' (verified via /api/auth/me), and inserts payments row with gateway='razorpay' status='paid' (verified via /api/payments). (8) Wrong signature → 400 and payment_status='failed_signature'. (9) /verify-public with valid signature (session_token, no JWT) → same effect; wrong sig → 400. (10) Stripe regression: /api/payments/checkout/subscription still returns real checkout.stripe.com URL; /api/payments/status polling works. (11) Weather, admin, auth, dashboard, marketplace, crops, equipment, services, community, knowledge, businesses, notifications, ai/chat all pass regression (unchanged from iteration 3). (12) No MongoDB '_id' leaked in any Razorpay response (create-order, status, verify, verify-public, payments list) — verified via both structured assertions and raw text scan.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_cropido_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1762 lines (was 1430) — Razorpay routes push it further past the 700-line guideline. Recommend splitting into modules (auth, marketplace, payments_stripe, payments_razorpay, admin, weather, ai) before more features are added.",
+    "RAZORPAY_KEY_SECRET is embedded in backend/.env plain text — acceptable for test-mode key rzp_test_*, but ensure production key is stored in a secrets manager and NOT committed.",
+    "RAZORPAY_WEBHOOK_SECRET is empty — currently there is no webhook endpoint for Razorpay (verification is done only through /verify and /verify-public). If Razorpay dashboard is configured to send webhooks (payment.captured, payment.failed), a receiver + signature check should be added; otherwise remove the empty env var to reduce confusion.",
+    "/api/razorpay/verify-public accepts session_token from the request body and performs subscription upgrade — this is fine because the HMAC signature (from Razorpay) is required, but rate-limiting this endpoint is recommended since session_token is guessable UUID hex (128-bit → OK entropy, but the endpoint is unauthenticated).",
+    "rzp_create_order validates order ownership (db.orders.find_one with user_id filter) — GOOD, addresses the concern raised in iteration 3 for the Stripe path (which still lacks equivalent order ownership + amount validation in /api/payments/checkout/order).",
+    "The hosted checkout page at /api/razorpay/checkout/{session_token} echoes the razorpay_order_id and key_id into an HTML string via f-string interpolation. session_token and order_id come from server-generated UUIDs/Razorpay IDs so XSS risk is minimal, but consider using html.escape() defensively.",
+    "The success/failure branches of the checkout page call /verify-public — confirmed working. However, /verify-public does not check that the transaction is still in 'created' state before marking it 'paid', which means a replayed valid signature could re-trigger the payments insert (mitigated by the `already` check on razorpay_payment_id, so idempotency is preserved).",
+    "get_current_user cleanly handles both JWT and Emergent session_token — good (unchanged from prev)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_cropido_backend.py (added 5 new TestRazorpay* classes with 17 new test cases covering create-order/status/checkout HTML/verify/verify-public/_id leaks)"
+  ],
+  "success_rate": {"backend": "100% (47/47)", "frontend": "N/A (skipped per request)"},
+  "seed_data_creation": "None persistent. Created one marketplace order (TEST_prod, ₹300) via /api/orders during test_create_order_marketplace_success — the order remains in db.orders but is scoped to the demo user and does not affect other tests. Multiple rzp_transactions rows are created (each test creates a fresh session_token); these do not conflict since they are keyed by unique session_token/razorpay_order_id. Demo user subscription is flipped to 'pro_farmer' by the verify-valid-signature test — this is idempotent on re-runs (already pro_farmer stays pro_farmer).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend base URL: https://agri-marketplace-144.preview.emergentagent.com/api. Test users: demo@cropido.app/demo1234 (farmer, now on pro_farmer plan after this run), admin@cropido.app/admin1234 (admin). Razorpay Test Mode key rzp_test_T8dp0FhJUKqtqK / secret M2H4LNpoaWu1usEuxPPvPkQ7 are in backend/.env. HMAC signature formula: hmac.new(secret.encode(), f'{order_id}|{payment_id}'.encode(), hashlib.sha256).hexdigest() — implemented in _rzp_sig() helper at top of test file. Real Razorpay Orders API IS called on every create-order (razorpay_client.order.create), so tests require network access to api.razorpay.com. Existing regression + Razorpay tests live in /app/backend/tests/test_cropido_backend.py (47 cases, 15-18s runtime). /api/auth/me returns {'user': {...}} wrapper — not a flat object. /api/orders expects address as a STRING, not a dict. Stripe /api/payments/checkout/subscription still working — do NOT complete payments as sessions are single-use.",
+  "rca_of_issue": "N/A — no application bugs found. Two test-code bugs discovered during first run were fixed in the test file (wrong /api/orders address schema; wrong /api/auth/me shape assumption). All Razorpay integration behaviours match the spec in the review request."
+}

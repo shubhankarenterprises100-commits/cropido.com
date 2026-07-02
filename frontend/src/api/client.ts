@@ -114,6 +114,11 @@ export const api = {
     request('/payments/checkout/order', 'POST', { order_id, amount, origin_url }),
   paymentStatus: (session_id: string) => request(`/payments/status/${session_id}`),
 
+  // Razorpay (India — UPI/cards/netbanking/wallets)
+  rzpCreateOrder: (data: { kind: 'subscription' | 'order'; plan_id?: string; order_id?: string }) =>
+    request('/razorpay/create-order', 'POST', data),
+  rzpStatus: (session_token: string) => request(`/razorpay/status/${session_token}`),
+
   // Weather (public)
   weather: (lat: number, lon: number) => request(`/weather?lat=${lat}&lon=${lon}`, 'GET', undefined, false),
 
