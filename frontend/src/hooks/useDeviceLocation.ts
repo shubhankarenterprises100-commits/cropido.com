@@ -23,7 +23,7 @@ async function getWebLocation(): Promise<{ lat: number; lon: number } | null> {
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
       () => resolve(null),
-      { timeout: 8000, maximumAge: 60000 },
+      { timeout: 8000, maximumAge: 0, enableHighAccuracy: false },
     );
   });
 }
