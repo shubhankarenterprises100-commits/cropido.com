@@ -851,6 +851,26 @@ async def update_profile(body: Dict[str, Any], user=Depends(get_current_user)):
 
 # ---------- SEEDING ----------
 async def seed_data():
+    # Seed demo user first (idempotent)
+    if not await db.users.find_one({"email": "demo@cropido.app"}):
+        await db.users.insert_one({
+            "user_id": "user_demo_farmer",
+            "email": "demo@cropido.app",
+            "password_hash": hash_pw("demo1234"),
+            "name": "Demo Farmer",
+            "role": "farmer",
+            "phone": "+919999999999",
+            "language": "en",
+            "verified": True,
+            "kyc_verified": False,
+            "picture": None,
+            "bio": "Growing crops with Cropido since 2026 🌾",
+            "farm_details": {"size_acres": 12, "irrigation": "drip"},
+            "crops_grown": ["Wheat", "Rice", "Sugarcane"],
+            "subscription": "free",
+            "created_at": now_utc().isoformat(),
+        })
+
     if await db.products.count_documents({}) > 0:
         return
     logger.info("Seeding demo data...")
