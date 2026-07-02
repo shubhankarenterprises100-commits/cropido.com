@@ -1,4 +1,4 @@
-# Cropido — Product Requirements (MVP v1)
+# Cropido — Product Requirements (v1.1)
 
 ## Vision
 India's digital agriculture ecosystem connecting farmers, buyers, suppliers, service providers, consultants and agri-businesses on a single platform.
@@ -8,44 +8,56 @@ India's digital agriculture ecosystem connecting farmers, buyers, suppliers, ser
 - Backend: FastAPI + MongoDB (motor async)
 - Auth: JWT (email/password) + Emergent-managed Google OAuth + simulated OTP
 - AI: Claude Sonnet 4.5 via Emergent Universal Key (`emergentintegrations`)
-- Payments: Stripe (test mode, subscription upgrade — mocked flow that logs a payment record)
+- Payments: **Real Stripe test mode** via `emergentintegrations.payments.stripe.checkout`
+- Weather: **Live Open-Meteo API** (no key, GPS-driven)
+- Location: `expo-location` (native) + browser Geolocation + OpenStreetMap Nominatim reverse-geocoding
 - i18n: `i18next` — English, Hindi, Bengali (static translation files)
 
 ## Modules Implemented
 1. Splash + 7-screen Onboarding (with language picker)
 2. Auth: Login, Register (role select), Forgot Password, OTP, Google Sign-in
-3. Home Dashboard: personalized greeting, weather widget, market prices ticker, quick actions bento grid (8), AI insight card, featured products, trending crops, nearby services, news
-4. Marketplace: product listing (2-col grid) with category chips, search, product detail, cart, orders (order placed → order tracking)
-5. Crop Trading: browse by category, create listing modal, verified seller badges
-6. Equipment Rental: list, category chips, booking modal with date range & confirm
-7. Agri Services: 8 categories, booking modal
-8. Community: 4 tabs (Feed, Communities, Experts, Trending), post composer modal, like, comments count
-9. Knowledge Center: featured article, category chips, articles list (video badge support)
-10. AI Farming Assistant: multi-turn chat, image upload for disease detection, suggestion chips, EN/HI/BN response
-11. Business Directory: 6 categories, verified badges, call/message actions
-12. Messaging: threads list (with empty state pointing to directory)
-13. Notifications: seeded demo alerts, mark-all-read
-14. Subscription: 4 plans (Free/Pro Farmer/Business/Enterprise) with Stripe-style checkout, mocked upgrade flow
+3. Home Dashboard: personalized greeting, **real GPS location**, **live weather widget (Open-Meteo)**, market prices ticker, quick actions bento grid (8), AI insight card, featured products, trending crops, nearby services, news
+4. Marketplace (12 seeded products, categories, search, cart, checkout, orders)
+5. Crop Trading (5 seeded listings, create-listing modal)
+6. Equipment Rental (6 items, booking modal)
+7. Agri Services (8 categories, booking modal)
+8. Community (4 tabs, compose modal, likes, comments)
+9. Knowledge Center (magazine layout)
+10. AI Farming Assistant — Claude Sonnet 4.5, image upload, EN/HI/BN
+11. Business Directory (6 categories, call/message actions)
+12. Messaging (threads list)
+13. Notifications (auto-seeded demo alerts)
+14. **Real Stripe Subscription Checkout** — Pro Farmer / Business / Enterprise plans open real `checkout.stripe.com` hosted page; on success, poll `/api/payments/status/{session_id}` → upgrade user + log payment
 15. Payments history
-16. Profile: verified badge, stats row, upgrade card, dark mode toggle, language, logout
-17. Settings: language switcher, dark mode, account details
+16. Profile with verified badge, stats, dark-mode toggle, admin link (conditional)
+17. Settings with instant language switching
+18. **Admin Dashboard** (`/admin`, requires `role='admin'`) — Overview stats (users, verified, products, revenue, plan breakdown, recent orders), user management (verify), product moderation (delete)
 
 ## Design System
 - Primary green `#2E7D32`, accent orange `#FF9800`, clean white background
-- Card-based, generous spacing, rounded corners (16-24px), subtle shadows
+- Card-based, generous spacing, rounded corners, subtle shadows
 - Bento-grid dashboards, sticky-header + chip-row pattern for browse screens
-- All interactive elements have `testID` (kebab-case, role-based)
+- All interactive elements have kebab-case `testID`s
 
-## Known Simulations / Placeholders
-- OTP is simulated (code `123456`)
-- Stripe subscription flow is MOCKED (records payment, upgrades in Mongo; no live Stripe Checkout Session opened)
-- Google Auth uses Emergent's demobackend session broker
-- Weather widget shows static demo data (Nashik)
+## Test Credentials
+- Farmer: `demo@cropido.app` / `demo1234`
+- Admin: `admin@cropido.app` / `admin1234`
+- OTP: any phone + `123456`
+- Stripe test card: `4242 4242 4242 4242`
 
-## Future Enhancements (post-MVP)
-- Live weather API (OpenWeather / IMD)
-- Real Stripe Checkout Sessions with webhook
-- Twilio / Firebase OTP
+## Testing Status
+- Backend: **30/30 pass** (iteration_3.json) — Stripe checkout, weather, admin RBAC, all regression
+- Frontend GPS location: verified by testing_agent
+
+## Known Notes (Non-blocking)
+- `/api/subscriptions/subscribe` legacy mock endpoint still present alongside real Stripe (used only for free plan downgrade)
+- `STRIPE_WEBHOOK_SECRET` empty — webhook still succeeds because `emergentintegrations` handles signature; add value if you configure a real webhook in Stripe dashboard
+- `/api/payments/checkout/order` should verify order ownership (add before enabling one-time payment UI)
+- `server.py` is ~1430 lines — modularize into routers post-MVP
+
+## Future Enhancements
+- Twilio for real mobile OTP
 - Real-time messaging (websockets)
 - Push notifications (Emergent-managed)
-- Admin panel (React admin dashboard on separate route group)
+- Modularize backend into routers (auth, marketplace, community, ai, payments, admin)
+- Referral system + farmer badges
