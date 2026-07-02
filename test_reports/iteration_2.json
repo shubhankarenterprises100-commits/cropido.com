@@ -1,0 +1,36 @@
+{
+  "summary": "Frontend-only regression test of the GPS location bug fix on Home dashboard. Verified via Playwright (mobile viewport 390x844) against the public preview URL with grant_permissions + set_geolocation. RESULT: BUG FIX VERIFIED. When geolocation is granted (Mumbai 19.0760, 72.8777), both testID='home-location-text' AND the weather card show 'Mumbai, Maharashtra' — no longer the hardcoded 'Nashik, Maharashtra'. Reverse geocoding via Nominatim works on web. When permission is denied, text correctly displays 'Tap to enable GPS' and testID='home-location-button' is tappable. No 'useDeviceLocation is not defined' runtime error. Filled 'location' icon appears in primary green when granted (visually confirmed in screenshot). One minor caching issue found: getWebLocation uses maximumAge:60000, so a re-tap of the location button within 60s returns the previous cached coordinates instead of the newly-set coordinates — the location does not refresh until cache expires.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "GPS re-request (loc.request) on web after grant",
+        "issue": "useDeviceLocation.getWebLocation() passes maximumAge:60000 to navigator.geolocation.getCurrentPosition. After first successful fetch, tapping the location button within 60s returns the cached position rather than fetching fresh coords. Repro: grant permissions, load home, tap home-location-button → coords do not refresh even if underlying geolocation changed. Fix: set maximumAge to 0 (or a small value like 5000) in /app/frontend/src/hooks/useDeviceLocation.ts:26 so an explicit user-triggered request always gets a fresh reading.",
+        "affected_testIDs": ["home-location-button", "home-location-text"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Style props (multiple screens)", "issue": "Console warns: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' — appears across many screens (likely from Shadow theme in /app/frontend/src/theme). Not related to GPS bug but worth cleaning up."},
+      {"component": "Image", "issue": "Console warns: 'Image: style.resizeMode is deprecated. Please use props.resizeMode.' Migrate style.resizeMode to props.resizeMode across the app."},
+      {"component": "pointerEvents", "issue": "Console warns: 'props.pointerEvents is deprecated. Use style.pointerEvents' — some component still uses prop form."}
+    ]
+  },
+  "test_report_links": ["/tmp/test_mumbai.png", "/tmp/test_delhi.png", "/tmp/test_denied.png"],
+  "action_items": [
+    "OPTIONAL: In /app/frontend/src/hooks/useDeviceLocation.ts change maximumAge from 60000 to 0 so that user-triggered loc.request() on web always fetches fresh coords (currently cache prevents re-request from updating within 60s).",
+    "OPTIONAL: Fix RN web deprecation warnings — migrate shadow* style props to boxShadow (theme), style.resizeMode → props.resizeMode on Images, and props.pointerEvents → style.pointerEvents."
+  ],
+  "critical_code_review_comments": [
+    "useDeviceLocation.ts is clean, well-structured; handles web + native + denied + blocked branches correctly and exposes openSettings() for the Settings deep-link fallback.",
+    "home.tsx correctly imports useDeviceLocation and switches Ionicon between 'location' (granted, green) and 'location-outline' (other) and toggles text per status ('Locating…', city string, 'Tap to enable GPS', 'GPS blocked — tap to open Settings')."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100% for core bug fix; 1 minor caching quirk"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Bug fix confirmed on web preview. Login flow: navigate to /login route (skip onboarding by clicking Skip if seen), then click testID='login-submit-button' — email/password are pre-filled with demo@cropido.app/demo1234. To test geolocation on web, use context.grant_permissions(['geolocation'], origin=<URL>) BEFORE goto, then context.set_geolocation({latitude, longitude}). Note: navigator.geolocation cache (maximumAge:60000) causes re-tap of location button within 60s to return same coords.",
+  "rca_of_issue": "Original bug: 'Location was hardcoded as Nashik, Maharashtra on Home dashboard'. Fix implemented in /app/frontend/src/hooks/useDeviceLocation.ts (new hook) and /app/frontend/app/(tabs)/home.tsx (uses hook + reverse geocoding via expo-location on native, Nominatim on web). Verification: Playwright set geolocation to Mumbai (19.0760, 72.8777); Home header rendered 'Mumbai, Maharashtra' and weather card also showed 'Mumbai, Maharashtra'. Denied path rendered 'Tap to enable GPS'."
+}

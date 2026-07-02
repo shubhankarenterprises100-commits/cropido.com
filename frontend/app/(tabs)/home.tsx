@@ -10,12 +10,14 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { api } from '@/src/api/client';
-import { Colors, Radius, Spacing, Shadow } from '@/src/theme';
+import { useDeviceLocation } from '@/src/hooks/useDeviceLocation';
+import { Colors, Radius, Shadow } from '@/src/theme';
 
 export default function Home() {
   const { t } = useTranslation();
   const router = useRouter();
   const { user } = useAuth();
+  const loc = useDeviceLocation();
   const [data, setData] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -58,10 +60,32 @@ export default function Home() {
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.greeting}>{t('home.greeting')}, {user?.name?.split(' ')[0] || 'Farmer'}! 👋</Text>
-            <View style={styles.locRow}>
-              <Ionicons name="location" size={12} color={Colors.textTertiary} />
-              <Text style={styles.locText}>Nashik, Maharashtra</Text>
-            </View>
+            <TouchableOpacity
+              style={styles.locRow}
+              onPress={() => {
+                if (loc.status === 'blocked') loc.openSettings();
+                else loc.request();
+              }}
+              testID="home-location-button"
+            >
+              <Ionicons
+                name={loc.status === 'granted' ? 'location' : loc.status === 'loading' ? 'reload' : 'location-outline'}
+                size={12}
+                color={loc.status === 'granted' ? Colors.primary : Colors.textTertiary}
+              />
+              <Text
+                style={[styles.locText, loc.status === 'granted' && { color: Colors.primary, fontWeight: '600' }]}
+                testID="home-location-text"
+              >
+                {loc.status === 'loading' && 'Locating…'}
+                {loc.status === 'granted' && (
+                  loc.city ? `${loc.city}${loc.region ? ', ' + loc.region : ''}` : `${loc.latitude?.toFixed(3)}, ${loc.longitude?.toFixed(3)}`
+                )}
+                {loc.status === 'denied' && 'Tap to enable GPS'}
+                {loc.status === 'blocked' && 'GPS blocked — tap to open Settings'}
+                {(loc.status === 'idle' || loc.status === 'error') && 'Location unavailable'}
+              </Text>
+            </TouchableOpacity>
           </View>
           <TouchableOpacity style={styles.iconBtn} onPress={() => router.push('/notifications')} testID="home-notifications-button">
             <Ionicons name="notifications-outline" size={22} color={Colors.textPrimary} />
@@ -79,7 +103,11 @@ export default function Home() {
           style={styles.weatherCard}
         >
           <View style={{ flex: 1 }}>
-            <Text style={styles.weatherLoc}>{data.weather.location}</Text>
+            <Text style={styles.weatherLoc}>
+              {loc.status === 'granted' && loc.city
+                ? `${loc.city}${loc.region ? ', ' + loc.region : ''}`
+                : data.weather.location}
+            </Text>
             <Text style={styles.weatherTemp}>{data.weather.temp}°</Text>
             <Text style={styles.weatherCond}>{data.weather.condition}</Text>
             <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
@@ -266,7 +294,7 @@ const styles = StyleSheet.create({
   centerBg: { flex: 1, backgroundColor: Colors.background, alignItems: 'center', justifyContent: 'center' },
   header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 8 },
   greeting: { fontSize: 20, fontWeight: '700', color: Colors.textPrimary, letterSpacing: -0.3 },
-  locRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+  locRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2, paddingVertical: 4, alignSelf: 'flex-start' },
   locText: { fontSize: 12, color: Colors.textTertiary },
   iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', ...Shadow.card },
   badge: { position: 'absolute', top: 8, right: 10, width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.error },

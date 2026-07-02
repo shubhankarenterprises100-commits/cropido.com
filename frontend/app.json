@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Share crop photos for AI disease detection",
-        "NSCameraUsageDescription": "Capture crop photos for AI analysis"
+        "NSCameraUsageDescription": "Capture crop photos for AI analysis",
+        "NSLocationWhenInUseUsageDescription": "Show your city and nearby farm services"
       }
     },
     "android": {
@@ -20,7 +21,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#2E7D32"
       },
-      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE"],
+      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE", "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"],
       "edgeToEdgeEnabled": true
     },
     "web": {
@@ -30,6 +31,12 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Cropido uses your location to show nearby buyers, services, and local market prices."
+        }
+      ],
       [
         "expo-splash-screen",
         {
