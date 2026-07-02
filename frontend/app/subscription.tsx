@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as WebBrowser from 'expo-web-browser';
 import { api } from '@/src/api/client';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { Colors, Radius, Shadow } from '@/src/theme';
+
+function getOriginUrl(): string {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    return window.location.origin;
+  }
+  return process.env.EXPO_PUBLIC_BACKEND_URL || 'https://agri-marketplace-144.preview.emergentagent.com';
+}
 
 export default function Subscription() {
   const router = useRouter();
@@ -15,6 +23,7 @@ export default function Subscription() {
   const [current, setCurrent] = useState('free');
   const [loading, setLoading] = useState(true);
   const [subscribing, setSubscribing] = useState<string | null>(null);
+  const [error, setError] = useState('');
 
   const load = async () => {
     try { const r = await api.plans(); setPlans(r.plans); setCurrent(r.current); } catch {}
@@ -22,13 +31,33 @@ export default function Subscription() {
   };
   useEffect(() => { load(); }, []);
 
-  const subscribe = async (planId: string) => {
+  const subscribe = async (planId: string, price: number) => {
+    setError('');
     setSubscribing(planId);
     try {
-      await api.subscribe(planId);
-      await refresh();
-      setCurrent(planId);
-    } catch {}
+      if (price === 0) {
+        // Downgrade to free — call mock endpoint
+        await api.subscribe(planId);
+        await refresh();
+        setCurrent(planId);
+      } else {
+        const origin = getOriginUrl();
+        const r = await api.checkoutSubscription(planId, origin);
+        const url = r.url;
+        if (Platform.OS === 'web') {
+          if (typeof window !== 'undefined') window.location.href = url;
+        } else {
+          const result = await WebBrowser.openAuthSessionAsync(url, `${origin}/payment-success`);
+          if (result.type === 'success' && result.url) {
+            const params = new URLSearchParams(result.url.split('?')[1] || '');
+            const sid = params.get('session_id');
+            if (sid) router.push({ pathname: '/payment-success', params: { session_id: sid } });
+          }
+        }
+      }
+    } catch (e: any) {
+      setError(e.message || 'Checkout failed');
+    }
     setSubscribing(null);
   };
 
@@ -45,8 +74,9 @@ export default function Subscription() {
           <View style={styles.heroCard}>
             <Ionicons name="rocket" size={30} color={Colors.secondary} />
             <Text style={styles.heroTitle}>Grow your farming business</Text>
-            <Text style={styles.heroSub}>Choose the plan that fits your needs</Text>
+            <Text style={styles.heroSub}>Real Stripe test-mode checkout. Use card 4242 4242 4242 4242.</Text>
           </View>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
           {plans.map((p) => {
             const isCurrent = current === p.plan_id;
             const isHighlight = p.highlight;
@@ -78,12 +108,14 @@ export default function Subscription() {
                 ) : (
                   <TouchableOpacity
                     style={[styles.selectBtn, isHighlight && { backgroundColor: Colors.secondary }]}
-                    onPress={() => subscribe(p.plan_id)}
+                    onPress={() => subscribe(p.plan_id, p.price)}
                     disabled={!!subscribing}
                     testID={`sub-select-${p.plan_id}`}
                   >
                     {subscribing === p.plan_id ? <ActivityIndicator color="#fff" /> : (
-                      <Text style={styles.selectText}>{p.cta}</Text>
+                      <>
+                        <Text style={styles.selectText}>{p.price === 0 ? p.cta : `${p.cta} · Pay with Stripe`}</Text>
+                      </>
                     )}
                   </TouchableOpacity>
                 )}
@@ -104,7 +136,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: '700', color: Colors.textPrimary },
   heroCard: { alignItems: 'center', padding: 20, backgroundColor: '#fff', borderRadius: Radius.lg, ...Shadow.card },
   heroTitle: { fontSize: 20, fontWeight: '800', color: Colors.textPrimary, marginTop: 10, letterSpacing: -0.3 },
-  heroSub: { fontSize: 13, color: Colors.textSecondary, marginTop: 4 },
+  heroSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 4, textAlign: 'center' },
+  error: { color: Colors.error, backgroundColor: '#FEE2E2', padding: 10, borderRadius: 8, fontSize: 13, textAlign: 'center' },
   planCard: { backgroundColor: '#fff', borderRadius: Radius.xl, padding: 20, ...Shadow.card, borderWidth: 1, borderColor: Colors.border, position: 'relative' },
   planCardHighlight: { borderColor: Colors.secondary, borderWidth: 2 },
   popularBadge: { position: 'absolute', top: -12, right: 20, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12 },

@@ -104,10 +104,24 @@ export const api = {
     request('/ai/chat', 'POST', { session_id, message, language, image_base64 }),
   aiHistory: (session_id: string) => request(`/ai/history/${session_id}`),
 
-  // Subscriptions
+  // Subscriptions & Payments
   plans: () => request('/subscriptions/plans'),
   subscribe: (plan_id: string) => request('/subscriptions/subscribe', 'POST', { plan_id }),
   payments: () => request('/payments'),
+  checkoutSubscription: (plan_id: string, origin_url: string) =>
+    request('/payments/checkout/subscription', 'POST', { plan_id, origin_url }),
+  checkoutOrder: (order_id: string, amount: number, origin_url: string) =>
+    request('/payments/checkout/order', 'POST', { order_id, amount, origin_url }),
+  paymentStatus: (session_id: string) => request(`/payments/status/${session_id}`),
+
+  // Weather (public)
+  weather: (lat: number, lon: number) => request(`/weather?lat=${lat}&lon=${lon}`, 'GET', undefined, false),
+
+  // Admin
+  adminStats: () => request('/admin/stats'),
+  adminUsers: () => request('/admin/users'),
+  adminVerifyUser: (user_id: string) => request(`/admin/users/${user_id}/verify`, 'POST'),
+  adminDeleteProduct: (product_id: string) => request(`/admin/products/${product_id}`, 'DELETE'),
 };
 
 export type Product = {

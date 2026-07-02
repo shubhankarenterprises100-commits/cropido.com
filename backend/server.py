@@ -1,5 +1,5 @@
 """Cropido — Digital Agriculture Super-App Backend (FastAPI + MongoDB)."""
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, status
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, status, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -15,6 +15,9 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout, CheckoutSessionRequest,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,6 +29,8 @@ db = client[os.environ['DB_NAME']]
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGO = 'HS256'
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', '')
+APP_BASE_URL = os.environ.get('APP_BASE_URL', 'http://localhost:8001')
 
 app = FastAPI(title="Cropido API")
 api = APIRouter(prefix="/api")
@@ -832,6 +837,265 @@ async def subscribe(body: SubscribeIn, user=Depends(get_current_user)):
     return {"ok": True, "plan": plan}
 
 
+# ---------- STRIPE CHECKOUT (real test mode) ----------
+class CheckoutSubIn(BaseModel):
+    plan_id: str
+    origin_url: str
+
+
+class CheckoutOrderIn(BaseModel):
+    order_id: str
+    amount: float
+    origin_url: str
+
+
+@api.post("/payments/checkout/subscription")
+async def checkout_subscription(body: CheckoutSubIn, user=Depends(get_current_user)):
+    plan = next((p for p in PLANS if p["plan_id"] == body.plan_id), None)
+    if not plan or plan["price"] == 0:
+        raise HTTPException(400, "Invalid or free plan")
+
+    origin = body.origin_url.rstrip('/')
+    webhook_url = f"{APP_BASE_URL}/api/webhook/stripe"
+    checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+    req = CheckoutSessionRequest(
+        amount=float(plan["price"]),
+        currency="inr",
+        success_url=f"{origin}/payment-success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{origin}/subscription",
+        metadata={
+            "user_id": user["user_id"], "kind": "subscription",
+            "plan_id": body.plan_id,
+        },
+    )
+    session = await checkout.create_checkout_session(req)
+
+    # Persist pending transaction (never trust client for amount)
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id,
+        "user_id": user["user_id"],
+        "kind": "subscription",
+        "plan_id": body.plan_id,
+        "amount": float(plan["price"]),
+        "currency": "inr",
+        "payment_status": "pending",
+        "created_at": now_utc().isoformat(),
+    })
+    return {"url": session.url, "session_id": session.session_id}
+
+
+@api.post("/payments/checkout/order")
+async def checkout_order(body: CheckoutOrderIn, user=Depends(get_current_user)):
+    origin = body.origin_url.rstrip('/')
+    webhook_url = f"{APP_BASE_URL}/api/webhook/stripe"
+    checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+    # Server-side validate amount range (INR paise up to 500,000)
+    amount = max(1.0, min(500000.0, float(body.amount)))
+    req = CheckoutSessionRequest(
+        amount=amount, currency="inr",
+        success_url=f"{origin}/payment-success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{origin}/cart",
+        metadata={"user_id": user["user_id"], "kind": "order", "order_id": body.order_id},
+    )
+    session = await checkout.create_checkout_session(req)
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id,
+        "user_id": user["user_id"],
+        "kind": "order",
+        "order_id": body.order_id,
+        "amount": amount,
+        "currency": "inr",
+        "payment_status": "pending",
+        "created_at": now_utc().isoformat(),
+    })
+    return {"url": session.url, "session_id": session.session_id}
+
+
+@api.get("/payments/status/{session_id}")
+async def payment_status(session_id: str, user=Depends(get_current_user)):
+    tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Transaction not found")
+
+    # If already finalized in DB, return
+    if tx.get("payment_status") in {"paid", "failed", "expired"}:
+        return {"payment_status": tx["payment_status"], "transaction": tx}
+
+    # Otherwise poll Stripe
+    checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=f"{APP_BASE_URL}/api/webhook/stripe")
+    try:
+        status = await checkout.get_checkout_status(session_id)
+    except Exception as e:
+        logger.warning(f"Stripe status fetch failed: {e}")
+        return {"payment_status": tx.get("payment_status", "pending"), "transaction": tx}
+
+    ps = getattr(status, "payment_status", None) or "pending"
+    updates = {"payment_status": ps, "updated_at": now_utc().isoformat()}
+    if ps == "paid" and tx["kind"] == "subscription":
+        await db.users.update_one(
+            {"user_id": tx["user_id"]},
+            {"$set": {"subscription": tx["plan_id"], "subscribed_at": now_utc().isoformat()}},
+        )
+        # Log to payments (idempotent — check if payment already logged for this session)
+        already = await db.payments.find_one({"session_id": session_id})
+        if not already:
+            await db.payments.insert_one({
+                "payment_id": f"pay_{uuid.uuid4().hex[:10]}",
+                "session_id": session_id,
+                "user_id": tx["user_id"], "plan_id": tx["plan_id"],
+                "amount": tx["amount"], "status": "paid",
+                "created_at": now_utc().isoformat(),
+            })
+    await db.payment_transactions.update_one({"session_id": session_id}, {"$set": updates})
+    tx.update(updates)
+    return {"payment_status": ps, "transaction": tx}
+
+
+@app.post("/api/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=f"{APP_BASE_URL}/api/webhook/stripe")
+        response = await checkout.handle_webhook(body, sig)
+        # response likely has session_id and payment_status
+        session_id = getattr(response, "session_id", None)
+        ps = getattr(response, "payment_status", None)
+        if session_id and ps:
+            tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+            if tx and tx.get("payment_status") != "paid":
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id},
+                    {"$set": {"payment_status": ps, "updated_at": now_utc().isoformat()}},
+                )
+                if ps == "paid" and tx["kind"] == "subscription":
+                    await db.users.update_one(
+                        {"user_id": tx["user_id"]},
+                        {"$set": {"subscription": tx["plan_id"], "subscribed_at": now_utc().isoformat()}},
+                    )
+                    already = await db.payments.find_one({"session_id": session_id})
+                    if not already:
+                        await db.payments.insert_one({
+                            "payment_id": f"pay_{uuid.uuid4().hex[:10]}",
+                            "session_id": session_id,
+                            "user_id": tx["user_id"], "plan_id": tx["plan_id"],
+                            "amount": tx["amount"], "status": "paid",
+                            "created_at": now_utc().isoformat(),
+                        })
+    except Exception as e:
+        logger.warning(f"Webhook processing error: {e}")
+    return {"ok": True}
+
+
+# ---------- LIVE WEATHER (Open-Meteo, no API key) ----------
+@api.get("/weather")
+async def get_weather(lat: float, lon: float):
+    """Fetch live weather from Open-Meteo (free, no key)."""
+    try:
+        async with httpx.AsyncClient(timeout=8) as hc:
+            r = await hc.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat, "longitude": lon,
+                    "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+                    "daily": "weather_code,temperature_2m_max,temperature_2m_min",
+                    "timezone": "auto",
+                    "forecast_days": 4,
+                },
+            )
+        j = r.json()
+        cur = j.get("current", {})
+        daily = j.get("daily", {})
+        code_map = {
+            0: ("Clear", "sunny"), 1: ("Mainly Clear", "sunny"), 2: ("Partly Cloudy", "partly-sunny"),
+            3: ("Overcast", "cloudy"), 45: ("Foggy", "cloud"), 48: ("Foggy", "cloud"),
+            51: ("Drizzle", "rainy"), 53: ("Drizzle", "rainy"), 55: ("Drizzle", "rainy"),
+            61: ("Rain", "rainy"), 63: ("Rain", "rainy"), 65: ("Heavy Rain", "rainy"),
+            71: ("Snow", "snow"), 73: ("Snow", "snow"), 75: ("Snow", "snow"),
+            80: ("Rain Showers", "rainy"), 81: ("Rain Showers", "rainy"), 82: ("Rain Showers", "rainy"),
+            95: ("Thunderstorm", "thunderstorm"), 96: ("Thunderstorm", "thunderstorm"), 99: ("Thunderstorm", "thunderstorm"),
+        }
+        cond, icon = code_map.get(int(cur.get("weather_code", 0)), ("Unknown", "partly-sunny"))
+        forecast = []
+        days_arr = daily.get("time", [])
+        codes = daily.get("weather_code", [])
+        maxs = daily.get("temperature_2m_max", [])
+        for i in range(1, min(4, len(days_arr))):
+            d_name = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][
+                datetime.fromisoformat(days_arr[i]).weekday()
+            ]
+            _, d_icon = code_map.get(int(codes[i]), ("", "partly-sunny"))
+            forecast.append({"day": d_name, "temp": round(maxs[i]), "icon": d_icon})
+        return {
+            "temp": round(cur.get("temperature_2m", 0)),
+            "condition": cond,
+            "humidity": round(cur.get("relative_humidity_2m", 0)),
+            "wind": round(cur.get("wind_speed_10m", 0)),
+            "icon": icon,
+            "forecast": forecast,
+        }
+    except Exception as e:
+        logger.warning(f"Weather fetch failed: {e}")
+        raise HTTPException(502, "Weather service unavailable")
+
+
+# ---------- ADMIN ----------
+async def require_admin(user=Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    return user
+
+
+@api.get("/admin/stats")
+async def admin_stats(admin=Depends(require_admin)):
+    users_count = await db.users.count_documents({})
+    verified_count = await db.users.count_documents({"verified": True})
+    farmers_count = await db.users.count_documents({"role": "farmer"})
+    products_count = await db.products.count_documents({})
+    crop_listings_count = await db.crop_listings.count_documents({})
+    orders_count = await db.orders.count_documents({})
+    posts_count = await db.community_posts.count_documents({})
+    services_bookings = await db.service_bookings.count_documents({})
+    eq_bookings = await db.equipment_bookings.count_documents({})
+    payments_docs = await db.payments.find({"status": "paid"}, {"_id": 0, "amount": 1}).to_list(1000)
+    revenue = sum(float(p.get("amount", 0)) for p in payments_docs)
+    # subscription split
+    plan_counts = {"free": 0, "pro_farmer": 0, "business": 0, "enterprise": 0}
+    async for u in db.users.find({}, {"_id": 0, "subscription": 1}):
+        plan_counts[u.get("subscription", "free")] = plan_counts.get(u.get("subscription", "free"), 0) + 1
+    # recent orders
+    recent_orders = await db.orders.find({}, {"_id": 0}).sort("created_at", -1).to_list(5)
+    return {
+        "totals": {
+            "users": users_count, "verified": verified_count, "farmers": farmers_count,
+            "products": products_count, "crop_listings": crop_listings_count,
+            "orders": orders_count, "community_posts": posts_count,
+            "service_bookings": services_bookings, "equipment_bookings": eq_bookings,
+            "revenue": round(revenue, 2), "paid_transactions": len(payments_docs),
+        },
+        "plan_counts": plan_counts,
+        "recent_orders": recent_orders,
+    }
+
+
+@api.get("/admin/users")
+async def admin_users(admin=Depends(require_admin)):
+    items = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(200)
+    return {"users": items}
+
+
+@api.post("/admin/users/{user_id}/verify")
+async def admin_verify_user(user_id: str, admin=Depends(require_admin)):
+    await db.users.update_one({"user_id": user_id}, {"$set": {"verified": True, "kyc_verified": True}})
+    return {"ok": True}
+
+
+@api.delete("/admin/products/{product_id}")
+async def admin_delete_product(product_id: str, admin=Depends(require_admin)):
+    await db.products.delete_one({"product_id": product_id})
+    return {"ok": True}
+
+
 @api.get("/payments")
 async def list_payments(user=Depends(get_current_user)):
     items = await db.payments.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
@@ -868,6 +1132,26 @@ async def seed_data():
             "farm_details": {"size_acres": 12, "irrigation": "drip"},
             "crops_grown": ["Wheat", "Rice", "Sugarcane"],
             "subscription": "free",
+            "created_at": now_utc().isoformat(),
+        })
+
+    # Seed admin user
+    if not await db.users.find_one({"email": "admin@cropido.app"}):
+        await db.users.insert_one({
+            "user_id": "user_admin",
+            "email": "admin@cropido.app",
+            "password_hash": hash_pw("admin1234"),
+            "name": "Cropido Admin",
+            "role": "admin",
+            "phone": "+911111111111",
+            "language": "en",
+            "verified": True,
+            "kyc_verified": True,
+            "picture": None,
+            "bio": "Platform administrator",
+            "farm_details": {},
+            "crops_grown": [],
+            "subscription": "enterprise",
             "created_at": now_utc().isoformat(),
         })
 

@@ -19,6 +19,7 @@ export default function Home() {
   const { user } = useAuth();
   const loc = useDeviceLocation();
   const [data, setData] = useState<any>(null);
+  const [liveWeather, setLiveWeather] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
@@ -29,7 +30,24 @@ export default function Home() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+
+  // Fetch live weather when GPS granted
+  useEffect(() => {
+    if (loc.status === 'granted' && loc.latitude && loc.longitude) {
+      api.weather(loc.latitude, loc.longitude)
+        .then((w) => setLiveWeather(w))
+        .catch(() => { /* keep demo */ });
+    }
+  }, [loc.status, loc.latitude, loc.longitude]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    if (loc.status === 'granted' && loc.latitude && loc.longitude) {
+      try { const w = await api.weather(loc.latitude, loc.longitude); setLiveWeather(w); } catch {}
+    }
+    setRefreshing(false);
+  };
 
   const quickActions = [
     { key: 'buy', icon: 'basket' as const, label: t('home.actions.buy'), color: Colors.primary, route: '/(tabs)/market' },
@@ -107,16 +125,17 @@ export default function Home() {
               {loc.status === 'granted' && loc.city
                 ? `${loc.city}${loc.region ? ', ' + loc.region : ''}`
                 : data.weather.location}
+              {liveWeather && <Text style={styles.liveBadge}>  · LIVE</Text>}
             </Text>
-            <Text style={styles.weatherTemp}>{data.weather.temp}°</Text>
-            <Text style={styles.weatherCond}>{data.weather.condition}</Text>
+            <Text style={styles.weatherTemp}>{(liveWeather ?? data.weather).temp}°</Text>
+            <Text style={styles.weatherCond}>{(liveWeather ?? data.weather).condition}</Text>
             <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
-              <View style={styles.wStat}><Ionicons name="water" size={12} color="#fff" /><Text style={styles.wStatText}>{data.weather.humidity}%</Text></View>
-              <View style={styles.wStat}><Ionicons name="cloud" size={12} color="#fff" /><Text style={styles.wStatText}>{data.weather.wind} km/h</Text></View>
+              <View style={styles.wStat}><Ionicons name="water" size={12} color="#fff" /><Text style={styles.wStatText}>{(liveWeather ?? data.weather).humidity}%</Text></View>
+              <View style={styles.wStat}><Ionicons name="cloud" size={12} color="#fff" /><Text style={styles.wStatText}>{(liveWeather ?? data.weather).wind} km/h</Text></View>
             </View>
           </View>
           <View style={styles.forecast}>
-            {data.weather.forecast.map((f: any) => (
+            {((liveWeather ?? data.weather).forecast || []).map((f: any) => (
               <View key={f.day} style={styles.forecastItem}>
                 <Text style={styles.fDay}>{f.day}</Text>
                 <Ionicons name={f.icon as any} size={20} color="#FFCC80" />
@@ -303,6 +322,7 @@ const styles = StyleSheet.create({
     ...Shadow.floating,
   },
   weatherLoc: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '600' },
+  liveBadge: { color: '#FFCC80', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
   weatherTemp: { color: '#fff', fontSize: 44, fontWeight: '800', letterSpacing: -1, lineHeight: 48 },
   weatherCond: { color: '#fff', fontSize: 14, fontWeight: '500' },
   wStat: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },

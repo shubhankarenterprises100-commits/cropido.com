@@ -18,6 +18,7 @@ export default function Profile() {
     { key: 'orders', icon: 'receipt' as const, label: t('profile.myOrders'), route: '/orders' as const },
     { key: 'sub', icon: 'ribbon' as const, label: t('profile.subscription'), route: '/subscription' as const, badge: user?.subscription?.toUpperCase() },
     { key: 'payments', icon: 'card' as const, label: t('profile.payments'), route: '/payments' as const },
+    ...(user?.role === 'admin' ? [{ key: 'admin', icon: 'shield' as const, label: 'Admin Console', route: '/admin' as const, badge: 'ADMIN' }] : []),
     { key: 'lang', icon: 'language' as const, label: t('profile.language'), route: '/settings' as const },
     { key: 'settings', icon: 'settings' as const, label: t('profile.settings'), route: '/settings' as const },
     { key: 'help', icon: 'help-circle' as const, label: t('profile.help'), route: '/settings' as const },
