@@ -1,0 +1,33 @@
+{
+  "summary": "REGRESSION-ONLY run to verify Hostinger MySQL SQLAlchemy + Alembic scaffolding did NOT break existing MongoDB-backed backend. Full pytest suite executed against public preview URL (https://agri-marketplace-144.preview.emergentagent.com/api): 47/47 PASSED (100%) in 13.65s. Verified: (1) Backend starts cleanly — no import errors from database.py / models.py / alembic; supervisor shows healthy uvicorn on 0.0.0.0:8001, GET /api/ returns 200. (2) server.py contains ZERO SQLAlchemy / models / database imports (grep confirmed) — scaffolding is completely isolated from the running API layer, so USE_MYSQL=false has no runtime effect. (3) Auth regression: demo@cropido.app/demo1234 login → 200 with token+user; admin@cropido.app/admin1234 login → 200 with role='admin'; /api/auth/me returns wrapped user; invalid password → 401. (4) Dashboard returns all 7 keys (weather, market_prices, featured_products, trending_crops, nearby_services, news, recommendations). (5) All catalog endpoints return arrays: /api/products, /api/crops, /api/equipment, /api/services, /api/businesses, /api/knowledge, /api/community/posts. (6) Cart+order flow: POST /api/orders (razorpay method, ₹300) succeeds and downstream Razorpay create-order reads ₹300 → 30000 paise. (7) /api/weather?lat=19.076&lon=72.877 returns live Open-Meteo data (temp, condition, humidity, wind, icon, forecast[]). (8) Razorpay full flow: create-order (subscription pro_farmer → order_* id, ₹299=29900 paise, key rzp_test_T8dp0FhJUKqtqK), status polling, public HTML checkout page, verify + verify-public with valid HMAC signature upgrades subscription and logs payment, wrong signature → 400 + failed_signature. (9) /api/ai/chat responds with Claude reply. (10) /api/admin/stats returns totals + plan_counts (free, pro_farmer, business, enterprise) + recent_orders; forbidden for non-admin (403); unauth (401). (11) Admin CRUD: user list, verify user (kyc_verified flip), product create+delete round-trip. (12) NO MongoDB '_id' leaked in ANY response (auth, admin.users, admin.stats.recent_orders, razorpay create/status/verify, payments list — verified via both structured assertions and raw response text scans). Zero regressions detected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_cropido_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1761 lines — still well past the 700-line guideline. The MySQL scaffolding (database.py 92 lines, models.py 355 lines) is well-organised in separate modules; encourage the same modularisation for server.py (auth, marketplace, payments_stripe, payments_razorpay, admin, weather, ai) before any further feature additions.",
+    "database.py has hardcoded fallback defaults for DB_USER, DB_NAME_MYSQL, and the DB_HOST placeholder ('your_hostinger_mysql_host'). While the _is_placeholder_host() guard prevents accidental connection, prefer failing fast if USE_MYSQL=true AND DB_HOST is still a placeholder — otherwise misconfiguration silently falls back to MongoDB at deploy time.",
+    "backend/.env contains DB_PASSWORD='Cropido321@' in plaintext for a Hostinger production DB — this MUST be moved to a secrets manager / Hostinger env-only source before going live. Currently committed to the environment file.",
+    "SQLAlchemy models exist but there is NO adapter/repository layer that server.py calls — the switch from MongoDB → MySQL will require substantial refactor (every db.<collection>.find_* call needs a SQLAlchemy equivalent). Suggest a thin data-access layer (e.g., users_repo.py) so USE_MYSQL becomes an actual toggle, not just documentation.",
+    "Alembic revision history has 3 files in /app/backend/alembic/versions/ (be572a6bf2c0_initial_cropido_schema.py, 1510592f33e6_initial_cropido_schema.py, 629dc7948406_initial_cropido_schema.py per prior log entries) — clean up stale revisions so only be572a6bf2c0 remains as the initial migration, otherwise `alembic upgrade head` on a fresh DB may pick the wrong head.",
+    "server.py line 27-29: mongo_url and JWT_SECRET use os.environ[...] (KeyError on missing) which is correct fail-fast behaviour — good pattern; consider applying the same to RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET in production if they become required."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (47/47)", "frontend": "N/A (skipped per request)"},
+  "seed_data_creation": "None new. Test run created one marketplace order (TEST_prod, ₹300) and multiple rzp_transactions rows (fresh session_token each) — same non-conflicting pattern as iteration 4. Demo user remains at 'pro_farmer' subscription (idempotent). No admin verification flips were undone.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend base URL: https://agri-marketplace-144.preview.emergentagent.com/api. Test users: demo@cropido.app/demo1234 (farmer, pro_farmer plan), admin@cropido.app/admin1234 (admin). SQLAlchemy scaffolding lives in /app/backend/database.py + /app/backend/models.py + /app/backend/alembic/ — server.py does NOT import any of it (verified via grep). USE_MYSQL=false in backend/.env keeps app on MongoDB. Full pytest suite (47 cases, ~14s) at /app/backend/tests/test_cropido_backend.py — reuse as-is for future regressions. When main agent flips USE_MYSQL=true and implements the adapter layer, add MySQL-specific tests and validate _is_placeholder_host guard is bypassed correctly.",
+  "rca_of_issue": "N/A — no bugs. Scaffolding-only change confirmed non-breaking: database.py and models.py are unreferenced by server.py, so the added SQLAlchemy dependency and Alembic files have no runtime impact on the MongoDB-backed API layer. All 47 previous test cases (auth, weather, dashboard, catalog, cart+order, admin, Stripe, Razorpay full flow, AI chat, _id leakage) pass unchanged."
+}
