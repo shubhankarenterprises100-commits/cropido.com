@@ -22,7 +22,8 @@ config = context.config
 if os.environ.get("ALEMBIC_TMP_SQLITE") == "1":
     config.set_main_option("sqlalchemy.url", "sqlite+aiosqlite:///./alembic_tmp.db")
 else:
-    config.set_main_option("sqlalchemy.url", build_async_url())
+    # Escape % for ConfigParser (password may contain URL-encoded chars)
+    config.set_main_option("sqlalchemy.url", build_async_url().replace("%", "%%"))
 
 if config.config_file_name:
     fileConfig(config.config_file_name)
