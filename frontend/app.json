@@ -14,15 +14,22 @@
         "NSPhotoLibraryUsageDescription": "Share crop photos for AI disease detection",
         "NSCameraUsageDescription": "Capture crop photos for AI analysis",
         "NSLocationWhenInUseUsageDescription": "Show your city and nearby farm services"
-      }
+      },
+      "bundleIdentifier": "com.emergent.agrimarketplace.pti2i2"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#2E7D32"
       },
-      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE", "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"],
-      "edgeToEdgeEnabled": true
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ],
+      "edgeToEdgeEnabled": true,
+      "package": "com.emergent.agrimarketplace.pti2i2"
     },
     "web": {
       "bundler": "metro",
