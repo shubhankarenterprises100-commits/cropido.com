@@ -61,3 +61,29 @@ India's digital agriculture ecosystem connecting farmers, buyers, suppliers, ser
 - Push notifications (Emergent-managed)
 - Modularize backend into routers (auth, marketplace, community, ai, payments, admin)
 - Referral system + farmer badges
+### Update (Session 2, July 2026): Crop Trading Buyer Journey Overhaul
+
+**Status:** ✅ COMPLETE
+
+Delivered a full-stack redesign of the crop-trading module transforming it from a basic listing view to an investor-ready B2B agri-marketplace.
+
+Backend:
+- Added 15 enhanced fields to `crop_listings` (crop_variety, harvest_date, minimum_order_quantity + unit, quality_grade, available_quantity, packaging_type, moisture_percentage, delivery_available, pickup_available, certificate_url, storage_condition, expected_delivery_days, preferred_payment, lab_tested)
+- New tables via Alembic: `crop_images`, `crop_inquiries`
+- New endpoints: `GET /api/crops/{id}`, `POST /api/crops/inquiry`, `GET /api/crops/inquiries/mine`, `GET /api/sellers/{id}`
+- Server-side validation for all critical fields
+- Inquiry flow auto-creates message thread + seller notification
+- Enriched seed data (6 listings with full field set)
+- MySQL migration `c1d2e3f4a5b6` applied to Hostinger
+- Fixed load_dotenv() ordering bug that was silently disabling MySQL sync
+
+Frontend:
+- Completely rebuilt `/crop-trading` with search, filter sheet (grade / price range / sort), category chips, enriched cards showing grade badges / lab-tested / fresh-harvest badges / MOQ / delivery-pickup / seller info + Inquire CTA
+- New multi-step "List a Crop" wizard: Basics → Quality → Logistics → Media → Review with inline validation, expo-image-picker (up to 5), date picker
+- New `/crop/{listing_id}` detail screen with image gallery, all 13 spec fields, seller card, sticky Inquire + Call CTAs, safety note
+- New `/seller/{seller_id}` public profile with stats, farm details, crops grown, listings/products tabs
+- Empty state, loading state, pull-to-refresh, keyboard handling
+
+Testing:
+- 33/33 backend crop-trading tests pass, 79/80 full regression
+- Frontend smoke: 100%
