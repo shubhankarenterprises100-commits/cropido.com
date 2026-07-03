@@ -1,0 +1,47 @@
+{
+  "summary": "Crop Trading buyer journey overhaul (Phase A+B+C) tested end-to-end. Backend: 33/33 new crop-trading tests PASS + full regression 79/80 PASS (1 flaky failure on TestWeather::test_weather_mumbai — Open-Meteo egress 502 from container, pre-existing infra, unrelated to this release). Frontend smoke: crop-trading loads with all seeded listings, search 'basmati' -> 1 result, Grade A filter -> 10 results, filter sheet opens, enriched cards show grade badge/lab tested/MOQ/delivery-pickup/seller info + Inquire button, card tap -> /crop/{id} detail screen shows gallery + all 13 new spec fields + seller card + safety note, Send Inquiry sheet opens with pre-filled quantity(MOQ)+offer(listed price)+message, Send button POSTs successfully (verified via /api/crops/inquiries/mine -> 5 sent), 5-step Create form (Basics/Quality/Logistics/Media/Review) opens from FAB with step indicator, /seller/{id} loads with stats (rating/listings/trades/kyc), farm details, Crops/Products tabs. Backend validation for POST /api/crops rejects each rule: no images (400), future harvest_date (400), bad date format (400), price<=0 (400), MOQ<=0 (400), available<MOQ (400), invalid quality_grade (400), variety <2 chars (400), unauth (401/403). POST /api/crops/inquiry auto-creates crop_inquiries row + message_threads row + messages row + notifications row; own-listing rejected (400); invalid listing_id -> 404; unauth -> 401/403. GET /api/sellers/{seller_id} returns aggregate stats + listings + products + no password_hash / _id leak; invalid id -> 404. GET /api/crops filters (grade/price range/location/category/q) + sorts (price_asc/price_desc/harvest_recent/recent) all correct.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/weather?lat=...&lon=...", "issue": "Returns 502 (Cloudflare) — Open-Meteo not reachable from container. Backend log shows 'Weather fetch failed'. Pre-existing infra egress issue, NOT introduced by this release. Consider adding a graceful fallback (cached last response or static dummy) so /api/weather never 502s the client."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Multiple 'shadow* style props are deprecated. Use boxShadow.' warnings in browser console — RN Web migration warning from RN >=0.75. Reference: many components under /app/frontend/app/**"},
+      {"component": "Image resizeMode", "issue": "'Image: style.resizeMode is deprecated. Please use props.resizeMode.' warning in console. Move resizeMode out of style prop onto the Image component. Reference: /app/frontend/app/crop/[id].tsx image gallery + card thumbs."},
+      {"component": "storage helper", "issue": "'[storage] retrieve(parse error) failed SyntaxError: Unexpected token e, eyJhbGciOi...' — storage util JSON.parses a stored raw JWT string. Harmless (falls back to raw string) but should JSON.stringify tokens on write or try/catch parse to silence."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_crop_trading.py",
+    "/app/backend/tests/test_cropido_backend.py",
+    "/app/test_reports/pytest/crop_trading_results.xml",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: replace deprecated 'shadow*' style props with boxShadow across affected components (RN >=0.75 migration).",
+    "Optional: move Image resizeMode from style to props in /app/frontend/app/crop/[id].tsx and any card image styles.",
+    "Optional: harden /api/weather with cached/fallback response so intermittent Open-Meteo egress failures don't 502 the dashboard.",
+    "Optional: silence storage parse warning by JSON.stringify tokens or wrap parse in try/catch in the storage util."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 2094 lines (+333 lines this release). Exceeds 700-line guideline by 3x. Strongly recommend splitting into routers (auth/marketplace/crops/payments/admin/community/ai) before adding more features. The seed data alone is ~300 lines.",
+    "GRADE_OPTIONS is a module-level constant with 5 values — good. Consider exposing it via a GET /api/crops/meta endpoint so the frontend picker stays in sync automatically instead of hardcoding the list in crop-trading.tsx.",
+    "POST /api/crops harvest_date parsing uses datetime.fromisoformat — bare 'YYYY-MM-DD' works but ISO with 'T' + timezone will also pass. If the multi-step create form ever sends full ISO datetimes, comparison to now_utc().date() still works, but the error message says 'YYYY-MM-DD' which may confuse. Consider tightening to date.fromisoformat.",
+    "seller_rating is hardcoded to 4.6 in both /api/crops/{id} and /api/sellers/{id}. Fine as a placeholder but flag it as tech debt — real reviews aggregation should replace it before launch.",
+    "In POST /api/crops/inquiry, opener message builder always says '/quintal' when listing.unit is missing. Since seed data always sets unit, this is fine, but a fallback to '/unit' would be safer."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_crop_trading.py (new — 33 tests)"
+  ],
+  "success_rate": {"backend": "100% for crop trading (33/33) — regression 79/80 with 1 pre-existing weather 502", "frontend": "100% smoke (crop-trading list/search/filter, detail screen, inquiry sheet, create form step 1, seller profile)"},
+  "seed_data_creation": "Tests created a handful of TEST_-prefixed crop listings owned by demo user (TEST_Wheat, TEST_SelfCrop) — used to validate cover-image fallback, MOQ, grade persistence, and self-inquiry rejection. Also created 5 inquiries under demo user (sent). No admin/product/order mutations. Existing seed data untouched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Base URL: https://agri-marketplace-144.preview.emergentagent.com/api. Credentials in /app/memory/test_credentials.md (demo@cropido.app/demo1234, admin@cropido.app/admin1234). Two pytest files under /app/backend/tests/: test_cropido_backend.py (79/80 — weather flaky due to egress) and test_crop_trading.py (33/33). GRADE_OPTIONS = {Grade A, Grade B, Grade C, Export Quality, Organic Certified}. New endpoints: GET/POST /api/crops (extended), GET /api/crops/{listing_id}, POST /api/crops/inquiry, GET /api/crops/inquiries/mine, GET /api/sellers/{seller_id}. New Expo screens: /crop-trading (with FAB + filter sheet + search), /crop/[id] (detail + gallery + inquiry sheet), /seller/[id] (public profile). Frontend uses testIDs prefixed with 'crop-', 'c-' (create form), 'inq-', 'filter-grade-'. Alert.alert() on web doesn't fire browser dialog — do NOT rely on page.on('dialog') to assert success; instead poll GET /api/crops/inquiries/mine.",
+  "rca_of_issue": "N/A — no bugs introduced. Only pre-existing weather 502 (Open-Meteo egress) surfaced during regression — not caused by this release."
+}

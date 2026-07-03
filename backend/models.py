@@ -7,10 +7,10 @@ Design notes:
 - utf8mb4 charset for emoji + Hindi/Bengali support
 - Audit logs table records mutations
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from sqlalchemy import (
-    String, Integer, Float, Boolean, Text, DateTime, ForeignKey, JSON,
-    Index, UniqueConstraint, BigInteger,
+    String, Integer, Float, Boolean, Text, DateTime, Date, ForeignKey, JSON,
+    Index, UniqueConstraint, BigInteger, Numeric,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List
@@ -110,10 +110,48 @@ class CropListing(Base, TimestampMixin):
     expected_price: Mapped[float] = mapped_column(Float, nullable=False)
     location: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     negotiable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    image: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="active", nullable=False, index=True)
     seller_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    # --- Enhanced crop fields (Phase A of buyer-journey overhaul) ---
+    crop_variety: Mapped[Optional[str]] = mapped_column(String(150), nullable=True, index=True)
+    harvest_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    minimum_order_quantity: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    minimum_order_unit: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    quality_grade: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)  # Grade A/B/C/Export Quality/Organic Certified
+    available_quantity: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    packaging_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    moisture_percentage: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
+    delivery_available: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    pickup_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    certificate_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    storage_condition: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    expected_delivery_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    preferred_payment: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    lab_tested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class CropImage(Base, TimestampMixin):
+    __tablename__ = "crop_images"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    crop_listing_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("crop_listings.id", ondelete="CASCADE"), nullable=False, index=True)
+    image_url: Mapped[str] = mapped_column(Text, nullable=False)
+    is_cover: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class CropInquiry(Base, TimestampMixin):
+    __tablename__ = "crop_inquiries"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    inquiry_uid: Mapped[str] = mapped_column(String(48), unique=True, nullable=False, index=True)
+    crop_listing_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("crop_listings.id", ondelete="CASCADE"), nullable=False, index=True)
+    buyer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    quantity: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    offered_price: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="open", nullable=False, index=True)  # open/negotiating/accepted/rejected/closed
 
 
 # ---------- EQUIPMENT ----------

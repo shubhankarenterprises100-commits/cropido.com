@@ -59,8 +59,26 @@ export const api = {
   orders: () => request('/orders'),
 
   // Crop trading
-  crops: (category?: string) => request(`/crops${category ? `?category=${category}` : ''}`, 'GET', undefined, false),
+  crops: (params?: { category?: string; q?: string; min_price?: number; max_price?: number; grade?: string; location?: string; sort?: string }) => {
+    const p = new URLSearchParams();
+    if (params?.category && params.category !== 'all') p.set('category', params.category);
+    if (params?.q) p.set('q', params.q);
+    if (params?.min_price != null) p.set('min_price', String(params.min_price));
+    if (params?.max_price != null) p.set('max_price', String(params.max_price));
+    if (params?.grade) p.set('grade', params.grade);
+    if (params?.location) p.set('location', params.location);
+    if (params?.sort) p.set('sort', params.sort);
+    const qs = p.toString();
+    return request(`/crops${qs ? '?' + qs : ''}`, 'GET', undefined, false);
+  },
+  crop: (id: string) => request(`/crops/${id}`, 'GET', undefined, false),
   createCrop: (data: any) => request('/crops', 'POST', data),
+  cropInquiry: (data: { listing_id: string; quantity?: number; offered_price?: number; message?: string }) =>
+    request('/crops/inquiry', 'POST', data),
+  myInquiries: () => request('/crops/inquiries/mine'),
+
+  // Seller profile
+  seller: (id: string) => request(`/sellers/${id}`, 'GET', undefined, false),
 
   // Equipment
   equipment: (category?: string) => request(`/equipment${category ? `?category=${category}` : ''}`, 'GET', undefined, false),

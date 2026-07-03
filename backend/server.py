@@ -1,9 +1,14 @@
 """Cropido — Digital Agriculture Super-App Backend (FastAPI + MongoDB)."""
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, status, Request
 from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
 import logging
 import uuid
 import json
@@ -11,7 +16,6 @@ import jwt
 import bcrypt
 import httpx
 import base64
-from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
@@ -26,7 +30,6 @@ from database import init_engine
 from sync import sync_entity, sync_delete, sync_stats, sync_failures_list, retry_failed
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -142,6 +145,9 @@ class ProductIn(BaseModel):
     stock: int = 100
 
 
+GRADE_OPTIONS = {"Grade A", "Grade B", "Grade C", "Export Quality", "Organic Certified"}
+
+
 class CropListingIn(BaseModel):
     crop: str
     category: str
@@ -151,7 +157,31 @@ class CropListingIn(BaseModel):
     location: str
     negotiable: bool = True
     image: Optional[str] = None
+    images: List[str] = []
     description: str = ""
+    # Enhanced professional fields
+    crop_variety: Optional[str] = None
+    harvest_date: Optional[str] = None  # ISO YYYY-MM-DD
+    minimum_order_quantity: Optional[float] = None
+    minimum_order_unit: Optional[str] = None  # kg / quintal / ton
+    quality_grade: Optional[str] = None
+    available_quantity: Optional[float] = None
+    packaging_type: Optional[str] = None
+    moisture_percentage: Optional[float] = None
+    delivery_available: bool = False
+    pickup_available: bool = True
+    certificate_url: Optional[str] = None
+    storage_condition: Optional[str] = None
+    expected_delivery_days: Optional[int] = None
+    preferred_payment: Optional[str] = None  # UPI / Bank Transfer / Cash / Cheque
+    lab_tested: bool = False
+
+
+class CropInquiryIn(BaseModel):
+    listing_id: str
+    quantity: Optional[float] = None
+    offered_price: Optional[float] = None
+    message: str = ""
 
 
 class EquipmentIn(BaseModel):
@@ -362,6 +392,42 @@ async def me(user=Depends(get_current_user)):
     return {"user": user}
 
 
+@api.get("/sellers/{seller_id}")
+async def get_seller_public_profile(seller_id: str):
+    """Public seller profile — used from crop detail 'View Seller' CTA."""
+    u = await db.users.find_one({"user_id": seller_id}, {"_id": 0, "password_hash": 0})
+    if not u:
+        raise HTTPException(404, "Seller not found")
+    listings = await db.crop_listings.find(
+        {"seller_id": seller_id, "status": "active"}, {"_id": 0}
+    ).sort("created_at", -1).to_list(20)
+    products = await db.products.find({"seller_id": seller_id}, {"_id": 0}).to_list(20)
+    completed_trades = await db.crop_inquiries.count_documents(
+        {"seller_id": seller_id, "status": "accepted"}
+    )
+    return {
+        "seller": {
+            "user_id": u.get("user_id"),
+            "name": u.get("name"),
+            "picture": u.get("picture"),
+            "role": u.get("role"),
+            "verified": u.get("verified", False),
+            "kyc_verified": u.get("kyc_verified", False),
+            "bio": u.get("bio"),
+            "farm_details": u.get("farm_details") or {},
+            "crops_grown": u.get("crops_grown") or [],
+            "phone": u.get("phone"),
+            "listings_count": len(listings),
+            "products_count": len(products),
+            "completed_trades": completed_trades,
+            "seller_rating": 4.6,  # placeholder until reviews land
+            "member_since": u.get("created_at"),
+        },
+        "listings": listings,
+        "products": products,
+    }
+
+
 @api.post("/auth/logout")
 async def logout(user=Depends(get_current_user), authorization: Optional[str] = Header(None)):
     if authorization and authorization.startswith("Bearer "):
@@ -496,26 +562,215 @@ async def list_orders(user=Depends(get_current_user)):
 
 # ---------- CROP TRADING ----------
 @api.get("/crops")
-async def list_crops(category: Optional[str] = None):
-    q: Dict[str, Any] = {}
+async def list_crops(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    grade: Optional[str] = None,
+    location: Optional[str] = None,
+    sort: str = "recent",  # recent | price_asc | price_desc | harvest_recent
+):
+    query: Dict[str, Any] = {"status": "active"}
     if category and category != "all":
-        q["category"] = category
-    items = await db.crop_listings.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+        query["category"] = category
+    if q:
+        query["$or"] = [
+            {"crop": {"$regex": q, "$options": "i"}},
+            {"crop_variety": {"$regex": q, "$options": "i"}},
+        ]
+    if grade:
+        query["quality_grade"] = grade
+    if location:
+        query["location"] = {"$regex": location, "$options": "i"}
+    if min_price is not None or max_price is not None:
+        pq: Dict[str, Any] = {}
+        if min_price is not None:
+            pq["$gte"] = float(min_price)
+        if max_price is not None:
+            pq["$lte"] = float(max_price)
+        query["expected_price"] = pq
+
+    sort_key = "created_at"
+    order = -1
+    if sort == "price_asc":
+        sort_key, order = "expected_price", 1
+    elif sort == "price_desc":
+        sort_key, order = "expected_price", -1
+    elif sort == "harvest_recent":
+        sort_key, order = "harvest_date", -1
+
+    items = await db.crop_listings.find(query, {"_id": 0}).sort(sort_key, order).to_list(200)
     return {"listings": items}
+
+
+@api.get("/crops/{listing_id}")
+async def get_crop(listing_id: str):
+    item = await db.crop_listings.find_one({"listing_id": listing_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(404, "Crop listing not found")
+    # attach seller mini-profile
+    seller = None
+    if item.get("seller_id"):
+        seller = await db.users.find_one(
+            {"user_id": item["seller_id"]},
+            {"_id": 0, "password_hash": 0}
+        )
+        if seller:
+            # aggregate seller reputation
+            listings_count = await db.crop_listings.count_documents({"seller_id": item["seller_id"]})
+            trades_count = await db.crop_inquiries.count_documents(
+                {"seller_id": item["seller_id"], "status": "accepted"}
+            ) if "crop_inquiries" in await db.list_collection_names() else 0
+            seller["listings_count"] = listings_count
+            seller["completed_trades"] = trades_count
+            seller["seller_rating"] = 4.6  # aggregate placeholder until reviews land
+    return {"listing": item, "seller": seller}
 
 
 @api.post("/crops")
 async def create_crop(body: CropListingIn, user=Depends(get_current_user)):
+    # ----- Validation -----
+    crop_variety = (body.crop_variety or "").strip()
+    if body.crop_variety is not None and len(crop_variety) > 0 and len(crop_variety) < 2:
+        raise HTTPException(400, "Crop variety must be at least 2 characters")
+
+    # Harvest date check — must not be future
+    if body.harvest_date:
+        try:
+            hd = datetime.fromisoformat(body.harvest_date).date()
+        except Exception:
+            raise HTTPException(400, "Invalid harvest_date format (use YYYY-MM-DD)")
+        if hd > now_utc().date():
+            raise HTTPException(400, "Harvest date cannot be in the future")
+
+    if body.expected_price is None or body.expected_price <= 0:
+        raise HTTPException(400, "Price must be positive")
+
+    if body.minimum_order_quantity is not None and body.minimum_order_quantity <= 0:
+        raise HTTPException(400, "MOQ must be greater than zero")
+
+    if body.available_quantity is not None and body.minimum_order_quantity is not None:
+        if body.available_quantity < body.minimum_order_quantity:
+            raise HTTPException(400, "Available quantity must be >= MOQ")
+
+    if body.quality_grade and body.quality_grade not in GRADE_OPTIONS:
+        raise HTTPException(400, f"Invalid quality grade. Allowed: {sorted(GRADE_OPTIONS)}")
+
+    if not body.image and not body.images:
+        raise HTTPException(400, "At least one image is required")
+
     lid = f"crop_{uuid.uuid4().hex[:10]}"
+    payload = body.model_dump()
+    # Cover image fallback
+    if not payload.get("image") and payload.get("images"):
+        payload["image"] = payload["images"][0]
     doc = {
-        "listing_id": lid, "seller_id": user["user_id"], "seller_name": user["name"],
+        "listing_id": lid,
+        "seller_id": user["user_id"],
+        "seller_name": user["name"],
         "seller_verified": user.get("verified", False),
-        "status": "active", "created_at": now_utc().isoformat(),
-        **body.model_dump(),
+        "seller_picture": user.get("picture"),
+        "seller_phone": user.get("phone"),
+        "status": "active",
+        "created_at": now_utc().isoformat(),
+        **payload,
     }
     await db.crop_listings.insert_one(doc)
     doc.pop("_id", None)
     return {"listing": doc}
+
+
+@api.post("/crops/inquiry")
+async def create_crop_inquiry(body: CropInquiryIn, user=Depends(get_current_user)):
+    listing = await db.crop_listings.find_one({"listing_id": body.listing_id}, {"_id": 0})
+    if not listing:
+        raise HTTPException(404, "Crop listing not found")
+    if listing.get("seller_id") == user["user_id"]:
+        raise HTTPException(400, "You cannot send inquiry to your own listing")
+
+    iid = f"inq_{uuid.uuid4().hex[:10]}"
+    inq = {
+        "inquiry_id": iid,
+        "listing_id": body.listing_id,
+        "crop": listing.get("crop"),
+        "buyer_id": user["user_id"],
+        "buyer_name": user["name"],
+        "seller_id": listing.get("seller_id"),
+        "seller_name": listing.get("seller_name"),
+        "quantity": body.quantity,
+        "offered_price": body.offered_price,
+        "message": body.message,
+        "status": "open",
+        "created_at": now_utc().isoformat(),
+    }
+    await db.crop_inquiries.insert_one(inq)
+
+    # Auto-create a message thread so the negotiation lands in the buyer's chat inbox
+    if listing.get("seller_id") and listing.get("seller_id") != user["user_id"]:
+        participants = sorted([user["user_id"], listing["seller_id"]])
+        thread = await db.message_threads.find_one({"participants": participants}, {"_id": 0})
+        if not thread:
+            tid = f"thr_{uuid.uuid4().hex[:10]}"
+            thread = {
+                "thread_id": tid,
+                "participants": participants,
+                "last_message": (body.message or f"Inquiry about {listing.get('crop')}")[:120],
+                "other_name": listing.get("seller_name") or "Seller",
+                "other_picture": listing.get("seller_picture"),
+                "updated_at": now_utc().isoformat(),
+                "created_at": now_utc().isoformat(),
+            }
+            await db.message_threads.insert_one(thread)
+        opener = (
+            body.message
+            or f"Hi, I'm interested in your {listing.get('crop')} listing."
+        )
+        if body.offered_price:
+            opener += f" I can offer ₹{body.offered_price}/{listing.get('unit', 'quintal')}."
+        if body.quantity:
+            opener += f" Looking for {body.quantity} {listing.get('unit', 'quintal')}."
+        mid = f"msg_{uuid.uuid4().hex[:10]}"
+        await db.messages.insert_one({
+            "message_id": mid,
+            "thread_id": thread["thread_id"],
+            "from_user_id": user["user_id"],
+            "to_user_id": listing["seller_id"],
+            "text": opener,
+            "meta": {"kind": "crop_inquiry", "listing_id": body.listing_id, "inquiry_id": iid},
+            "read": False,
+            "created_at": now_utc().isoformat(),
+        })
+        await db.message_threads.update_one(
+            {"thread_id": thread["thread_id"]},
+            {"$set": {"last_message": opener[:120], "updated_at": now_utc().isoformat()}},
+        )
+        # Also seed a notification for the seller
+        await db.notifications.insert_one({
+            "notif_id": f"ntf_{uuid.uuid4().hex[:10]}",
+            "user_id": listing["seller_id"],
+            "title": f"New inquiry for {listing.get('crop')}",
+            "body": f"{user['name']} sent you an inquiry.",
+            "type": "inquiry",
+            "icon": "chatbubble-ellipses",
+            "read": False,
+            "created_at": now_utc().isoformat(),
+        })
+
+    inq.pop("_id", None)
+    return {"inquiry": inq}
+
+
+@api.get("/crops/inquiries/mine")
+async def list_my_inquiries(user=Depends(get_current_user)):
+    """Inquiries where the user is buyer or seller (for dashboard)."""
+    sent = await db.crop_inquiries.find(
+        {"buyer_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    received = await db.crop_inquiries.find(
+        {"seller_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return {"sent": sent, "received": received}
 
 
 # ---------- EQUIPMENT ----------
@@ -1488,11 +1743,10 @@ async def seed_data():
             "created_at": now_utc().isoformat(),
         })
 
-    if await db.products.count_documents({}) > 0:
-        return
-    logger.info("Seeding demo data...")
+    logger.info("Seeding demo data (idempotent per-collection)...")
 
-    products = [
+    if await db.products.count_documents({}) == 0:
+        products = [
         # Seeds
         {"title": "Premium Hybrid Wheat Seeds", "category": "seeds", "price": 850, "unit": "5kg pack",
          "image": "https://images.unsplash.com/photo-1625246333195-78d9c38ad449?w=600",
@@ -1535,43 +1789,114 @@ async def seed_data():
          "image": "https://images.unsplash.com/photo-1548550023-2bdb3c5beed7?w=600",
          "description": "Balanced starter feed for chicks and broilers.", "stock": 150, "rating": 4.5, "reviews_count": 65},
     ]
-    for p in products:
-        p["product_id"] = f"prod_{uuid.uuid4().hex[:10]}"
-        p["seller_id"] = "system"
-        p["seller_name"] = "Cropido Verified Seller"
-        p["created_at"] = now_utc().isoformat()
-    await db.products.insert_many(products)
+        for p in products:
+            p["product_id"] = f"prod_{uuid.uuid4().hex[:10]}"
+            p["seller_id"] = "system"
+            p["seller_name"] = "Cropido Verified Seller"
+            p["created_at"] = now_utc().isoformat()
+        await db.products.insert_many(products)
 
-    crops = [
-        {"crop": "Organic Basmati Rice", "category": "rice", "quantity": 50, "unit": "quintal",
-         "expected_price": 3800, "location": "Karnal, Haryana", "negotiable": True,
+    if await db.crop_listings.count_documents({}) == 0:
+        crops = [
+        {"crop": "Organic Basmati Rice", "category": "rice", "quantity": 180, "unit": "quintal",
+         "expected_price": 4250, "location": "Karnal, Haryana", "negotiable": True,
          "image": "https://images.unsplash.com/photo-1568347355280-d33fdf77d42a?w=600",
-         "description": "Premium quality, harvested last week. Certified organic.", "seller_name": "Ramesh Kumar", "seller_verified": True},
-        {"crop": "Fresh Tomatoes", "category": "vegetables", "quantity": 200, "unit": "kg",
-         "expected_price": 25, "location": "Nashik, Maharashtra", "negotiable": True,
-         "image": "https://images.unsplash.com/photo-1546470427-e26264be0b8b?w=600",
-         "description": "Farm-fresh tomatoes, Grade A quality.", "seller_name": "Suresh Patil", "seller_verified": True},
-        {"crop": "Alphonso Mangoes", "category": "fruits", "quantity": 100, "unit": "kg",
-         "expected_price": 380, "location": "Ratnagiri, Maharashtra", "negotiable": False,
-         "image": "https://images.unsplash.com/photo-1553279768-865429fa0078?w=600",
-         "description": "GI-tagged Alphonso, direct from farm.", "seller_name": "Ganesh Sawant", "seller_verified": True},
-        {"crop": "Sharbati Wheat", "category": "wheat", "quantity": 300, "unit": "quintal",
-         "expected_price": 2650, "location": "Sehore, Madhya Pradesh", "negotiable": True,
-         "image": "https://images.unsplash.com/photo-1574323347407-f5e1ad6d020b?w=600",
-         "description": "Premium Sharbati wheat, high protein content.", "seller_name": "Vijay Sharma", "seller_verified": True},
-        {"crop": "Toor Dal (Arhar)", "category": "pulses", "quantity": 80, "unit": "quintal",
-         "expected_price": 7200, "location": "Latur, Maharashtra", "negotiable": True,
-         "image": "https://images.unsplash.com/photo-1596797038530-2c107229654b?w=600",
-         "description": "Freshly harvested toor dal, ready for pickup.", "seller_name": "Anand Deshmukh", "seller_verified": False},
-    ]
-    for c in crops:
-        c["listing_id"] = f"crop_{uuid.uuid4().hex[:10]}"
-        c["seller_id"] = f"user_seed_{uuid.uuid4().hex[:6]}"
-        c["status"] = "active"
-        c["created_at"] = now_utc().isoformat()
-    await db.crop_listings.insert_many(crops)
+         "images": [
+             "https://images.unsplash.com/photo-1568347355280-d33fdf77d42a?w=800",
+             "https://images.unsplash.com/photo-1586201375761-83865001e31c?w=800",
+         ],
+         "description": "Long-grain aromatic basmati, aged 12 months. Grade A cleaned and sorted. Suitable for export & premium retail.",
+         "seller_name": "Ramesh Kumar", "seller_verified": True,
+         "crop_variety": "Pusa 1121", "harvest_date": "2026-06-15",
+         "minimum_order_quantity": 20, "minimum_order_unit": "quintal",
+         "quality_grade": "Grade A", "available_quantity": 180,
+         "packaging_type": "50 kg PP woven bags", "moisture_percentage": 12,
+         "delivery_available": True, "pickup_available": True,
+         "storage_condition": "Dry, ventilated warehouse", "expected_delivery_days": 5,
+         "preferred_payment": "UPI / Bank Transfer", "lab_tested": True},
 
-    equipment = [
+        {"crop": "Fresh Tomatoes", "category": "vegetables", "quantity": 3500, "unit": "kg",
+         "expected_price": 28, "location": "Nashik, Maharashtra", "negotiable": True,
+         "image": "https://images.unsplash.com/photo-1546470427-e26264be0b8b?w=600",
+         "images": ["https://images.unsplash.com/photo-1546470427-e26264be0b8b?w=800"],
+         "description": "Farm-fresh red hybrid tomatoes, hand-picked this morning. Suitable for retail & processing.",
+         "seller_name": "Suresh Patil", "seller_verified": True,
+         "crop_variety": "Namdhari NS-2535", "harvest_date": "2026-07-01",
+         "minimum_order_quantity": 100, "minimum_order_unit": "kg",
+         "quality_grade": "Grade A", "available_quantity": 3500,
+         "packaging_type": "10 kg crates", "moisture_percentage": None,
+         "delivery_available": True, "pickup_available": True,
+         "storage_condition": "Cold storage 8-12°C", "expected_delivery_days": 1,
+         "preferred_payment": "UPI / Cash", "lab_tested": False},
+
+        {"crop": "Alphonso Mangoes", "category": "fruits", "quantity": 800, "unit": "kg",
+         "expected_price": 420, "location": "Ratnagiri, Maharashtra", "negotiable": False,
+         "image": "https://images.unsplash.com/photo-1553279768-865429fa0078?w=600",
+         "images": ["https://images.unsplash.com/photo-1553279768-865429fa0078?w=800"],
+         "description": "GI-tagged Ratnagiri Alphonso, tree-ripened, direct from farm. Export quality.",
+         "seller_name": "Ganesh Sawant", "seller_verified": True,
+         "crop_variety": "Ratnagiri Alphonso (GI)", "harvest_date": "2026-05-20",
+         "minimum_order_quantity": 5, "minimum_order_unit": "kg",
+         "quality_grade": "Export Quality", "available_quantity": 800,
+         "packaging_type": "Wooden crates with paper wrap", "moisture_percentage": None,
+         "delivery_available": True, "pickup_available": False,
+         "storage_condition": "Ambient, ripening chamber", "expected_delivery_days": 3,
+         "preferred_payment": "Bank Transfer", "lab_tested": True},
+
+        {"crop": "Sharbati Wheat", "category": "wheat", "quantity": 620, "unit": "quintal",
+         "expected_price": 2850, "location": "Sehore, Madhya Pradesh", "negotiable": True,
+         "image": "https://images.unsplash.com/photo-1574323347407-f5e1ad6d020b?w=600",
+         "images": ["https://images.unsplash.com/photo-1574323347407-f5e1ad6d020b?w=800"],
+         "description": "Premium Sharbati wheat with high protein & golden colour. Cleaned & fumigated.",
+         "seller_name": "Vijay Sharma", "seller_verified": True,
+         "crop_variety": "Sharbati (MP)", "harvest_date": "2026-04-10",
+         "minimum_order_quantity": 50, "minimum_order_unit": "quintal",
+         "quality_grade": "Grade A", "available_quantity": 620,
+         "packaging_type": "100 kg jute bags", "moisture_percentage": 10.5,
+         "delivery_available": False, "pickup_available": True,
+         "storage_condition": "Silo storage", "expected_delivery_days": 7,
+         "preferred_payment": "Bank Transfer", "lab_tested": True},
+
+        {"crop": "Toor Dal (Arhar)", "category": "pulses", "quantity": 240, "unit": "quintal",
+         "expected_price": 8100, "location": "Latur, Maharashtra", "negotiable": True,
+         "image": "https://images.unsplash.com/photo-1596797038530-2c107229654b?w=600",
+         "images": ["https://images.unsplash.com/photo-1596797038530-2c107229654b?w=800"],
+         "description": "Freshly harvested toor dal, cleaned & polished. Ideal for wholesale & retail.",
+         "seller_name": "Anand Deshmukh", "seller_verified": False,
+         "crop_variety": "BDN-711", "harvest_date": "2026-03-25",
+         "minimum_order_quantity": 10, "minimum_order_unit": "quintal",
+         "quality_grade": "Grade B", "available_quantity": 240,
+         "packaging_type": "50 kg PP bags", "moisture_percentage": 11,
+         "delivery_available": True, "pickup_available": True,
+         "storage_condition": "Dry warehouse", "expected_delivery_days": 4,
+         "preferred_payment": "UPI", "lab_tested": False},
+
+        {"crop": "Certified Organic Turmeric", "category": "spices", "quantity": 90, "unit": "quintal",
+         "expected_price": 12500, "location": "Erode, Tamil Nadu", "negotiable": True,
+         "image": "https://images.unsplash.com/photo-1615485500704-8e990f9900f7?w=600",
+         "images": ["https://images.unsplash.com/photo-1615485500704-8e990f9900f7?w=800"],
+         "description": "Curcumin > 3.5%. India Organic + USDA certified. Hand-sorted premium fingers.",
+         "seller_name": "Krishnan Farms", "seller_verified": True,
+         "crop_variety": "Salem-Erode", "harvest_date": "2026-02-15",
+         "minimum_order_quantity": 5, "minimum_order_unit": "quintal",
+         "quality_grade": "Organic Certified", "available_quantity": 90,
+         "packaging_type": "25 kg gunny bags", "moisture_percentage": 8.5,
+         "delivery_available": True, "pickup_available": True,
+         "storage_condition": "Dry, cool warehouse", "expected_delivery_days": 6,
+         "preferred_payment": "Bank Transfer", "lab_tested": True,
+         "certificate_url": "https://example.com/cert-organic-turmeric.pdf"},
+    ]
+        for c in crops:
+            c["listing_id"] = f"crop_{uuid.uuid4().hex[:10]}"
+            c["seller_id"] = f"user_seed_{uuid.uuid4().hex[:6]}"
+            c["seller_picture"] = f"https://i.pravatar.cc/150?u={c['seller_id']}"
+            c["seller_phone"] = "+919999888800"
+            c["status"] = "active"
+            c["created_at"] = now_utc().isoformat()
+        await db.crop_listings.insert_many(crops)
+
+    if await db.equipment.count_documents({}) == 0:
+        equipment = [
         {"name": "Mahindra 575 Tractor", "category": "tractor", "daily_price": 1800,
          "location": "Nashik, MH", "description": "45 HP tractor with all attachments.",
          "image": "https://images.pexels.com/photos/7457180/pexels-photo-7457180.jpeg?w=600", "rating": 4.7, "owner": "Krishna Farms"},
@@ -1591,12 +1916,13 @@ async def seed_data():
          "location": "Jaipur, RJ", "description": "9-tyne cultivator, tractor mounted.",
          "image": "https://images.unsplash.com/photo-1523348837708-15d4a09cfac2?w=600", "rating": 4.3, "owner": "Rajasthan Rentals"},
     ]
-    for e in equipment:
-        e["equipment_id"] = f"eq_{uuid.uuid4().hex[:10]}"
-        e["created_at"] = now_utc().isoformat()
-    await db.equipment.insert_many(equipment)
+        for e in equipment:
+            e["equipment_id"] = f"eq_{uuid.uuid4().hex[:10]}"
+            e["created_at"] = now_utc().isoformat()
+        await db.equipment.insert_many(equipment)
 
-    services = [
+    if await db.services.count_documents({}) == 0:
+        services = [
         {"name": "Soil Testing (NPK + pH)", "category": "soil_testing", "price": 499,
          "description": "Complete soil analysis with recommendations. 3-day turnaround.",
          "provider": "AgriLab India", "rating": 4.8, "icon": "flask"},
@@ -1622,12 +1948,13 @@ async def seed_data():
          "description": "Farm loans, KCC, credit planning.",
          "provider": "AgriCredit Advisors", "rating": 4.7, "icon": "cash"},
     ]
-    for s in services:
-        s["service_id"] = f"svc_{uuid.uuid4().hex[:10]}"
-        s["created_at"] = now_utc().isoformat()
-    await db.services.insert_many(services)
+        for s in services:
+            s["service_id"] = f"svc_{uuid.uuid4().hex[:10]}"
+            s["created_at"] = now_utc().isoformat()
+        await db.services.insert_many(services)
 
-    knowledge = [
+    if await db.knowledge.count_documents({}) == 0:
+        knowledge = [
         {"title": "Complete Guide to Rabi Season Wheat Cultivation",
          "category": "guides", "author": "Dr. Rajesh Verma",
          "image": "https://images.unsplash.com/photo-1574323347407-f5e1ad6d020b?w=600",
@@ -1659,13 +1986,14 @@ async def seed_data():
          "excerpt": "Recognize and treat 12 common pests.",
          "read_time": "15 min", "views": 9400},
     ]
-    for k in knowledge:
-        k["article_id"] = f"art_{uuid.uuid4().hex[:10]}"
-        k["is_video"] = k.get("is_video", False)
-        k["created_at"] = now_utc().isoformat()
-    await db.knowledge.insert_many(knowledge)
+        for k in knowledge:
+            k["article_id"] = f"art_{uuid.uuid4().hex[:10]}"
+            k["is_video"] = k.get("is_video", False)
+            k["created_at"] = now_utc().isoformat()
+        await db.knowledge.insert_many(knowledge)
 
-    businesses = [
+    if await db.businesses.count_documents({}) == 0:
+        businesses = [
         {"name": "GreenLeaf Traders", "category": "traders", "location": "Pune, MH",
          "rating": 4.8, "phone": "+919876543210", "verified": True,
          "description": "Wholesale grain and pulses trader — 15 years experience.",
@@ -1691,12 +2019,13 @@ async def seed_data():
          "description": "Farm equipment rental across Gujarat and MP.",
          "logo": "https://images.unsplash.com/photo-1592982537447-6f2a6a0c8bfb?w=300"},
     ]
-    for b in businesses:
-        b["business_id"] = f"biz_{uuid.uuid4().hex[:10]}"
-        b["created_at"] = now_utc().isoformat()
-    await db.businesses.insert_many(businesses)
+        for b in businesses:
+            b["business_id"] = f"biz_{uuid.uuid4().hex[:10]}"
+            b["created_at"] = now_utc().isoformat()
+        await db.businesses.insert_many(businesses)
 
-    posts = [
+    if await db.community_posts.count_documents({}) == 0:
+        posts = [
         {"user_id": "seed_1", "user_name": "Ramesh Kumar",
          "user_picture": "https://i.pravatar.cc/150?img=13",
          "content": "Just harvested 50 quintals of organic basmati! 🌾 Best yield in 5 years. Anyone interested in bulk purchase, DM me.",
@@ -1721,10 +2050,10 @@ async def seed_data():
          "tags": ["mango", "market"], "likes_count": 198, "comments_count": 45, "shares_count": 32,
          "likes_by": [], "is_expert": False},
     ]
-    for p in posts:
-        p["post_id"] = f"post_{uuid.uuid4().hex[:10]}"
-        p["created_at"] = now_utc().isoformat()
-    await db.community_posts.insert_many(posts)
+        for p in posts:
+            p["post_id"] = f"post_{uuid.uuid4().hex[:10]}"
+            p["created_at"] = now_utc().isoformat()
+        await db.community_posts.insert_many(posts)
 
     logger.info("Seed data inserted.")
 
