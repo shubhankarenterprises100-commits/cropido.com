@@ -16,10 +16,12 @@ from models import (
     User, Profile, Product, CropListing, Equipment, EquipmentRental,
     Service, Booking, Order, Payment, CommunityPost, Comment,
     Notification, KnowledgeArticle, Business, SyncStatus,
+    Message, MessageThread, AnalyticsEvent,
 )
 
 logger = logging.getLogger("cropido.sync")
-_retry_queue: asyncio.Queue = asyncio.Queue()
+_retry_queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
+_worker_started = False
 
 
 def _to_dt(v):
@@ -121,6 +123,39 @@ def _map_doc_to_row(entity_type: str, doc: Dict[str, Any], user_pk: Optional[int
         return ("equipment_rental_special", "booking_uid", d["booking_id"], d)
     if entity_type == "service_booking":
         return ("service_booking_special", "booking_uid", d["booking_id"], d)
+    if entity_type == "business":
+        return (Business, "business_uid", d["business_id"], dict(
+            business_uid=d["business_id"], name=d["name"],
+            category_code=d.get("category", "other"),
+            location=d.get("location"), phone=d.get("phone"),
+            email=d.get("email"), website=d.get("website"),
+            logo=d.get("logo"), description=d.get("description", ""),
+            rating=float(d.get("rating", 0)), verified=bool(d.get("verified", False)),
+            created_at=_to_dt(d.get("created_at")) or datetime.now(timezone.utc),
+        ))
+    if entity_type == "knowledge_article":
+        return (KnowledgeArticle, "article_uid", d["article_id"], dict(
+            article_uid=d["article_id"], title=d["title"],
+            category_code=d.get("category", "general"),
+            author=d.get("author"), image=d.get("image"),
+            excerpt=d.get("excerpt"), body=d.get("body"),
+            read_time=d.get("read_time"), views=int(d.get("views", 0)),
+            is_video=bool(d.get("is_video", False)),
+            created_at=_to_dt(d.get("created_at")) or datetime.now(timezone.utc),
+        ))
+    if entity_type == "analytics_event":
+        return (AnalyticsEvent, "event_uid", d["event_id"], dict(
+            event_uid=d["event_id"], user_id=user_pk,
+            event_type=d.get("event_type", "generic"),
+            payload_json=d.get("payload") or {},
+            created_at=_to_dt(d.get("created_at")) or datetime.now(timezone.utc),
+        ))
+    if entity_type == "comment":
+        return ("comment_special", "comment_uid", d["comment_id"], d)
+    if entity_type == "message":
+        return ("message_special", "message_uid", d["message_id"], d)
+    if entity_type == "message_thread":
+        return ("message_thread_special", "thread_uid", d["thread_id"], d)
     return None
 
 
@@ -195,6 +230,78 @@ async def sync_entity(entity_type: str, doc: Dict[str, Any]) -> bool:
                 await _record_sync(session, "service_booking", uid_value, True)
                 await session.commit()
                 return True
+            if Model == "comment_special":
+                d = kwargs
+                post_r = await session.execute(select(CommunityPost.id).where(CommunityPost.post_uid == d.get("post_id")))
+                post_pk = post_r.scalar_one_or_none()
+                if not post_pk or not user_pk:
+                    await _record_sync(session, entity_type, uid_value, False, "missing FK")
+                    await session.commit()
+                    return False
+                stmt = mysql_insert(Comment).values(
+                    comment_uid=d["comment_id"], post_id=post_pk, user_id=user_pk,
+                    text=d.get("text", ""),
+                    created_at=_to_dt(d.get("created_at")) or datetime.now(timezone.utc),
+                )
+                stmt = stmt.on_duplicate_key_update(text=stmt.inserted.text)
+                await session.execute(stmt)
+                await _record_sync(session, "comment", uid_value, True)
+                await session.commit()
+                return True
+            if Model == "message_thread_special":
+                d = kwargs
+                parts = d.get("participants") or []
+                if len(parts) < 2:
+                    await _record_sync(session, entity_type, uid_value, False, "missing participants")
+                    await session.commit()
+                    return False
+                pk_a = await _resolve_user_pk(session, parts[0])
+                pk_b = await _resolve_user_pk(session, parts[1])
+                if not pk_a or not pk_b:
+                    await _record_sync(session, entity_type, uid_value, False, "missing user FK")
+                    await session.commit()
+                    return False
+                a, b = sorted([pk_a, pk_b])
+                stmt = mysql_insert(MessageThread).values(
+                    thread_uid=d["thread_id"], user_a_id=a, user_b_id=b,
+                    last_message=d.get("last_message"),
+                    created_at=_to_dt(d.get("created_at")) or datetime.now(timezone.utc),
+                )
+                stmt = stmt.on_duplicate_key_update(last_message=stmt.inserted.last_message)
+                await session.execute(stmt)
+                await _record_sync(session, "message_thread", uid_value, True)
+                await session.commit()
+                return True
+            if Model == "message_special":
+                d = kwargs
+                # find thread pk
+                thr_r = await session.execute(select(MessageThread.id).where(MessageThread.thread_uid == d.get("thread_id")))
+                thr_pk = thr_r.scalar_one_or_none()
+                from_pk = await _resolve_user_pk(session, d.get("from_user_id"))
+                to_pk = await _resolve_user_pk(session, d.get("to_user_id"))
+                if not (thr_pk and from_pk and to_pk):
+                    await _record_sync(session, entity_type, uid_value, False, "missing FK (thread/user)")
+                    await session.commit()
+                    return False
+                stmt = mysql_insert(Message).values(
+                    message_uid=d["message_id"], thread_id=thr_pk,
+                    from_user_id=from_pk, to_user_id=to_pk,
+                    text=d.get("text", ""), read=bool(d.get("read", False)),
+                    created_at=_to_dt(d.get("created_at")) or datetime.now(timezone.utc),
+                )
+                stmt = stmt.on_duplicate_key_update(read=stmt.inserted.read)
+                await session.execute(stmt)
+                # also update thread last_message
+                await session.execute(
+                    mysql_insert(MessageThread).values(
+                        thread_uid=d.get("thread_id"),
+                        user_a_id=min(from_pk, to_pk), user_b_id=max(from_pk, to_pk),
+                        last_message=d.get("text", ""),
+                    ).on_duplicate_key_update(last_message=d.get("text", ""))
+                )
+                await _record_sync(session, "message", uid_value, True)
+                await session.commit()
+                return True
 
             # Standard upsert
             stmt = mysql_insert(Model).values(**kwargs)
@@ -228,7 +335,12 @@ async def sync_entity(entity_type: str, doc: Dict[str, Any]) -> bool:
         logger.warning(f"Sync {entity_type} failed: {e}")
         try:
             async with SessionLocal() as session:
-                uid = doc.get("user_id") or doc.get("product_id") or doc.get("listing_id") or doc.get("order_id") or doc.get("post_id") or doc.get("notif_id") or doc.get("payment_id") or doc.get("booking_id") or "unknown"
+                uid = (doc.get("user_id") or doc.get("product_id") or doc.get("listing_id")
+                       or doc.get("order_id") or doc.get("post_id") or doc.get("notif_id")
+                       or doc.get("payment_id") or doc.get("booking_id")
+                       or doc.get("business_id") or doc.get("article_id")
+                       or doc.get("event_id") or doc.get("comment_id")
+                       or doc.get("message_id") or doc.get("thread_id") or "unknown")
                 await _record_sync(session, entity_type, str(uid), False, str(e))
                 await session.commit()
         except Exception:
@@ -250,6 +362,11 @@ async def sync_delete(entity_type: str, uid_value: str) -> bool:
             "user": (User, "user_uid"),
             "crop_listing": (CropListing, "listing_uid"),
             "community_post": (CommunityPost, "post_uid"),
+            "business": (Business, "business_uid"),
+            "knowledge_article": (KnowledgeArticle, "article_uid"),
+            "notification": (Notification, "notif_uid"),
+            "order": (Order, "order_uid"),
+            "comment": (Comment, "comment_uid"),
         }
         m = table_map.get(entity_type)
         if not m: return False
